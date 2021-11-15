@@ -25,13 +25,12 @@ import time
 
 class WGAN:
     def __init__(self, latent_dims=100, lr=0.0005, device='gpu:0', GP=True, data_type='sim',
-                 z_lim=None, batch_norm=False, mode='template', dropout=0.5, gen_units=100, crit_units=100):
+                 z_lim=None, batch_norm=False, mode='template', dropout=0.5, gen_units=100, crit_units=100, sn_type='II'):
         self.latent_dims = latent_dims
         self.lr = lr
         self.device = device
         self.GP = GP
         self.cosmo = FlatLambdaCDM(H0=70, Om0=0.3, Tcmb0=2.725)
-        # self.generator_type = generator_type
         self.data_type = data_type
         self.z_lim = z_lim
         self.batch_norm = batch_norm
@@ -61,15 +60,16 @@ class WGAN:
         for key, vals in type_dict.items():
             for val in vals:
                 self.type_dict[val] = key
-        self.class_label_dict = {0.0: 'II', 1.0: 'IIn', 2.0: 'IIb', 3.0: 'Ib', 4.0: 'Ic', 5.0: 'Ic-BL'}
+        self.class_label_decoder = {0.0: 'II', 1.0: 'IIn', 2.0: 'IIb', 3.0: 'Ib', 4.0: 'Ic', 5.0: 'Ic-BL'}
+        self.class_label_encoder = {val: key for key, val in self.class_label_decoder.items()}
         # --
         if self.mode == 'observed':
             self.n_output = 12
         else:
             self.n_output = 5
         if self.data_type == 'sim':
-            self.name = f'WGAN_DES_sim_CCSNe_{self.mode}_lr{self.lr}_ld{self.latent_dims}_GP{self.GP}_zlim{self.z_lim}'\
-                        f'_bn{self.batch_norm}_gN{self.gen_units}_cN{self.crit_units}'
+            self.name = f'WGAN_DES_sim_{sn_type}_CCSNe_{self.mode}_lr{self.lr}_ld{self.latent_dims}_GP{self.GP}' \
+                        f'_zlim{self.z_lim}_bn{self.batch_norm}_gN{self.gen_units}_cN{self.crit_units}'
         else:
             raise ValueError('Not implemented for real data')
         self.root = os.path.join('Data', 'Models', 'WGAN', self.mode, self.name)
@@ -90,6 +90,7 @@ class WGAN:
         else:
             print('Dataset does not already exist, creating now...')
             self.train_df, self.scaling_factors = self.__prepare_dataset__()
+        self.train_df = self.train_df[self.train_df.sn_type == self.class_label_encoder[sn_type]]
         self.generator_dir = os.path.join(self.root, 'model_weights')
 
         with tf.device(self.device):
@@ -558,23 +559,29 @@ class WGAN:
                 bn1 = BatchNormalization()(gru1)
                 gru2 = GRU(self.crit_units, return_sequences=True)(bn1)
                 bn2 = BatchNormalization()(gru2)
-                output = GRU(1, activation='sigmoid')(bn2)
+                output = GRU(1, activation=None)(bn2)
             else:
                 gru2 = GRU(self.crit_units, return_sequences=True)(dr1)
                 dr2 = Dropout(self.dropout)(gru2)
-                output = GRU(1)(dr2)
+                output = GRU(1, activation=None)(dr2)
             model = Model(input, output)
             return model
 
     def plot_train_sample(self):
         print('Generating plots for training sample...')
+        if not os.path.exists(os.path.join(self.root, 'Training_sample')):
+            os.mkdir(os.path.join(self.root, 'Training_sample'))
         for sn in tqdm(self.train_df.sn.unique()):
             sndf = self.train_df[self.train_df.sn == sn]
             plt.figure(figsize=(12, 8))
-            for band in ['g', 'r', 'i', 'z']:
-                plt.scatter(sndf['t'], sndf[band], label=band)
-            plt.legend()
-            plt.savefig(os.path.join('Data', 'Training_sample_plots', f'{sn}.jpg'))
+            for b_ind, band in enumerate(['g', 'r', 'i', 'z']):
+                ax = plt.subplot(2, 2, b_ind + 1)
+                if self.mode == 'template':
+                    ax.scatter(sndf['t'], sndf[band], label=band)
+                elif self.mode == 'observed':
+                    ax.errorbar(sndf[f'{band}_t'], sndf[band], yerr=sndf[f'{band}_err'], fmt='x', label=band)
+                ax.legend()
+            plt.savefig(os.path.join(self.root, 'Training_sample', f'{sn}.jpg'))
             plt.close('all')
 
     def train(self, epochs=100, batch_size=1, plot_interval=None):
