@@ -75,6 +75,11 @@ class WGAN:
         self.root = os.path.join('Data', 'Models', 'WGAN', self.mode, self.name)
         if not os.path.exists(self.root):
             os.mkdir(self.root)
+        self.checkpoint_dir = os.path.join(self.root, 'checkpoint')
+        self.prev_epochs = 0
+        if os.path.exists(os.path.join(self.root, 'Train_plots')):
+            self.prev_epochs = np.max([int(val.split('.')[0]) for val in
+                                       os.listdir(os.path.join(self.root, 'Train_plots'))])
         if self.data_type == 'real':
             self.dataset_name = f'WGAN_DES_real_GP{self.GP}'
             self.dataset_path = os.path.join('Data', 'Datasets', f'{self.dataset_name}.csv')
@@ -594,10 +599,59 @@ class WGAN:
             sne = self.train_df.sn.unique()
             n_batches = int(len(sne) / batch_size)
 
-            if os.path.exists(self.generator_dir):
-                raise ValueError('A weights path already exists for this model, please delete '
-                                 'or rename it')
-            os.mkdir(self.generator_dir)
+            # Build models------------------------------------------------------------------
+            c_optimizer = opt.RMSprop(lr=self.lr)
+            g_optimizer = opt.RMSprop(lr=self.lr)
+
+            critic = self.build_critic()
+            critic.compile(loss=self.wasserstein_loss, optimizer=self.optimizer)
+
+            # Build generator
+            generator = self.build_generator()
+
+            # Build combined model
+
+            i = Input(shape=(None, self.latent_dims))
+            lcs = generator(i)
+
+            critic.trainable = False
+
+            valid = critic(lcs)
+
+            combined = Model(i, valid)
+            combined.compile(loss=self.wasserstein_loss, optimizer=self.optimizer)
+            # ------------------------------------------------------------------------------
+
+            checkpoint = tf.train.Checkpoint(g_optimizer=g_optimizer,
+                                             d_optimizer=c_optimizer,
+                                             generator=generator,
+                                             critic=critic,
+                                             combined=combined
+                                             )
+            if not os.path.exists(self.checkpoint_dir):
+                os.mkdir(self.checkpoint_dir)
+            ckpt_manager = tf.train.CheckpointManager(checkpoint, self.checkpoint_dir, max_to_keep=3)
+            if ckpt_manager.latest_checkpoint:
+                print(f'Models already exist, resuming training from epoch {self.prev_epochs + 1}...')
+                old_combined_weights = pickle.load(open(os.path.join(self.root, 'combined_weights.pkl'), 'rb'))
+                old_critic_weights = pickle.load(open(os.path.join(self.root, 'critic_weights.pkl'), 'rb'))
+                print(type(old_combined_weights))
+                print(type(old_critic_weights))
+
+                checkpoint.restore(ckpt_manager.latest_checkpoint)
+                critic.trainable = True
+                critic.compile(loss=self.wasserstein_loss, optimizer=c_optimizer)
+                critic.trainable = False
+                combined.compile(loss=self.wasserstein_loss, optimizer=g_optimizer)
+                '''
+                print([np.mean((old_combined_weights[i] == combined.get_weights()[i]).flatten()) for i in
+                       range(len(old_combined_weights))])
+                print([np.mean((old_critic_weights[i] == critic.get_weights()[i]).flatten()) for i in
+                       range(len(old_critic_weights))])
+                print([old_critic_weights[i] == critic.get_weights()[i] for i in range(len(critic))])
+                print(old_critic_weights[1] == critic.get_weights()[1])
+                raise ValueError('Nope')
+                '''
 
             real = -np.ones((batch_size, 1))
             fake = np.ones((batch_size, 1))
@@ -607,7 +661,6 @@ class WGAN:
                 g_losses, d_losses, real_predictions, fake_predictions = [], [], [], []
                 t = trange(n_batches)
                 for batch in t:
-
                     # Select real data
                     sn = sne[batch]
                     sndf = self.train_df[self.train_df.sn == sn]
@@ -659,7 +712,15 @@ class WGAN:
                     t.set_description(f'g_loss={np.around(np.mean(g_losses), 5)},'
                                       f' d_loss={np.around(np.mean(d_losses), 5)}')
                     t.refresh()
-                self.generator.save_weights(os.path.join(self.generator_dir, f'{epoch + 1}.h5'))
+                print(combined.get_layer(index=2).get_weights()[0])
+                print(combined.get_layer(index=2).get_weights()[0] == critic.get_weights()[0])
+                if os.path.exists(os.path.join(self.root, 'combined_weights.pkl')):
+                    os.remove(os.path.join(self.root, 'combined_weights.pkl'))
+                pickle.dump(combined.get_weights(), open(os.path.join(self.root, 'combined_weights.pkl'), 'wb'))
+                if os.path.exists(os.path.join(self.root, 'critic_weights.pkl')):
+                    os.remove(os.path.join(self.root, 'critic_weights.pkl'))
+                pickle.dump(critic.get_weights(), open(os.path.join(self.root, 'critic_weights.pkl'), 'wb'))
+                ckpt_manager.save()
                 full_g_loss = np.mean(g_losses)
                 full_d_loss = np.mean(d_losses)
                 print(f'{epoch + 1}/{epochs} g_loss={full_g_loss}, d_loss={full_d_loss}, '
