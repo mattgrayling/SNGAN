@@ -23,9 +23,47 @@ from george.kernels import Matern32Kernel
 import time
 
 
+class Critic(Model):
+    def __init__(self, units=50, dropout=0.5, n_output=12):
+        super(Critic, self).__init__()
+        self.gru1 = GRU(units, return_sequences=True)
+        self.dr1 = Dropout(dropout)
+        self.gru2 = GRU(units, return_sequences=True)
+        self.dr2 = Dropout(dropout)
+        self.gru3 = GRU(1, activation=None)
+
+    def call(self, inputs, training=False):
+        x = self.gru1(inputs)
+        if training:
+            x = self.dr1(x, training=training)
+        x = self.gru2(x)
+        if training:
+            x = self.dr2(x, training=training)
+        return self.gru3(x)
+
+class Generator(Model):
+    def __init__(self, latent_dims, units, dropout, n_output):
+        super(Generator, self).__init__(latent_dims, units, dropout, n_output)
+        self.gru1 = GRU(units, return_sequences=True, activation='relu')
+        self.dr1 = Dropout(dropout)
+        self.gru2 = GRU(units, return_sequences=True, activation='relu')
+        self.dr2 = Dropout(dropout)
+        self.gru3 = GRU(n_output, return_sequences=True, activation='sigmoid')
+
+    def call(self, inputs, training=False):
+        x = self.gru1(inputs)
+        if training:
+            x = self.dr1(x, training=training)
+        x = self.gru2(x)
+        if training:
+            x = self.dr2(x, training=training)
+        return self.gru3(x)
+
+
 class WGAN:
     def __init__(self, latent_dims=100, lr=0.0005, device='gpu:0', GP=True, data_type='sim',
-                 z_lim=None, batch_norm=False, mode='template', dropout=0.5, gen_units=100, crit_units=100, sn_type='II'):
+                 z_lim=None, batch_norm=False, mode='template', dropout=0.5, gen_units=100, crit_units=100,
+                 sn_type='II'):
         self.latent_dims = latent_dims
         self.lr = lr
         self.device = device
@@ -77,7 +115,8 @@ class WGAN:
             os.mkdir(self.root)
         self.checkpoint_dir = os.path.join(self.root, 'checkpoint')
         self.prev_epochs = 0
-        if os.path.exists(os.path.join(self.root, 'Train_plots')):
+        if os.path.exists(os.path.join(self.root, 'Train_plots')) and \
+                len(os.listdir(os.path.join(self.root, 'Train_plots'))) > 0:
             self.prev_epochs = np.max([int(val.split('.')[0]) for val in
                                        os.listdir(os.path.join(self.root, 'Train_plots'))])
         if self.data_type == 'real':
@@ -97,31 +136,6 @@ class WGAN:
             self.train_df, self.scaling_factors = self.__prepare_dataset__()
         self.train_df = self.train_df[self.train_df.sn_type == self.class_label_encoder[sn_type]]
         self.generator_dir = os.path.join(self.root, 'model_weights')
-
-        with tf.device(self.device):
-            # Optimizer
-
-            # Build discriminator
-            self.critic = self.build_critic()
-            self.critic.compile(loss=self.wasserstein_loss, optimizer=self.optimizer)
-            print(self.critic.summary())
-
-            # Build generator
-            self.generator = self.build_generator()
-            print(self.generator.summary())
-
-            # Build combined model
-
-            i = Input(shape=(None, self.latent_dims))
-            lcs = self.generator(i)
-
-            self.critic.trainable = False
-
-            valid = self.critic(lcs)
-
-            self.combined = Model(i, valid)
-            self.combined.compile(loss=self.wasserstein_loss, optimizer=self.optimizer)
-            print(self.combined.summary())
 
     def __prepare_dataset__(self):
         if self.data_type == 'real':
@@ -542,7 +556,7 @@ class WGAN:
             return all_new_df, scaling_factors
 
     def wasserstein_loss(self, y_true, y_pred):
-        return K.mean(y_true * y_pred)
+        return tf.reduce_mean(y_true * y_pred)
 
     def build_generator(self):
         with tf.device(self.device):
@@ -589,6 +603,44 @@ class WGAN:
             plt.savefig(os.path.join(self.root, 'Training_sample', f'{sn}.jpg'))
             plt.close('all')
 
+    # @tf.function
+    def train_step(self, X, epoch):
+        with tf.GradientTape() as gen_tape, tf.GradientTape() as disc_tape:
+            noise = tf.random.normal((1, self.latent_dims))
+            noise = tf.reshape(noise, (1, 1, self.latent_dims))
+            noise = tf.repeat(noise, X.shape[1], 1)
+
+            real_data_real_label = self.critic.call(X, training=True)
+            print(real_data_real_label)
+            self.critic.summary()
+            raise ValueError('Nope')
+            gen_lcs = self.generator(noise)
+            fake_data_fake_label = self.critic(gen_lcs, training=True)
+
+            noise = tf.random.normal((2, self.latent_dims))
+            noise = tf.reshape(noise, (2, 1, self.latent_dims))
+            noise = tf.repeat(noise, X.shape[1], 1)
+
+            gen_lcs = self.generator(noise)
+            fake_data_real_label = self.critic(gen_lcs, training=True)
+
+            # Calculate losses---------------------------------------------------
+            gen_loss = self.wasserstein_loss(tf.fill(tf.shape(fake_data_real_label), -1.), fake_data_real_label)
+            crit_loss = 0.5 * (self.wasserstein_loss(tf.fill(tf.shape(real_data_real_label), -1.), real_data_real_label) + \
+                self.wasserstein_loss(tf.ones_like(fake_data_fake_label), fake_data_fake_label))
+        # print('Generator: ', fake_data_real_label, gen_loss)
+        # print('Critic: ', fake_data_fake_label, real_data_real_label, crit_loss)
+        crit_gradients = disc_tape.gradient(crit_loss, self.critic.trainable_variables)
+        print(self.critic.trainable_variables)
+        print(self.critic.summary())
+        print(crit_gradients)
+        raise ValueError('Nope')
+        gen_gradients = gen_tape.gradient(gen_loss, self.generator.trainable_variables)
+        self.c_optimizer.apply_gradients(zip(crit_gradients, self.critic.trainable_variables))
+        self.g_optimizer.apply_gradients(zip(gen_gradients, self.generator.trainable_variables))
+        return real_data_real_label.numpy().flatten()[0], fake_data_fake_label.numpy().flatten()[0], \
+            gen_loss.numpy(), crit_loss.numpy()
+
     def train(self, epochs=100, batch_size=1, plot_interval=None):
         print('Starting training...')
         if not os.path.exists(os.path.join(self.root, 'Train_plots')):
@@ -600,67 +652,66 @@ class WGAN:
             n_batches = int(len(sne) / batch_size)
 
             # Build models------------------------------------------------------------------
-            c_optimizer = opt.RMSprop(lr=self.lr)
-            g_optimizer = opt.RMSprop(lr=self.lr)
+            self.c_optimizer = opt.RMSprop(lr=self.lr)
+            self.g_optimizer = opt.RMSprop(lr=self.lr)
 
-            critic = self.build_critic()
-            critic.compile(loss=self.wasserstein_loss, optimizer=self.optimizer)
+            # self.critic = self.build_critic()
+            self.critic = Critic(units=self.crit_units, dropout=self.dropout, n_output=self.n_output)
 
             # Build generator
-            generator = self.build_generator()
-
-            # Build combined model
-
-            i = Input(shape=(None, self.latent_dims))
-            lcs = generator(i)
-
-            critic.trainable = False
-
-            valid = critic(lcs)
-
-            combined = Model(i, valid)
-            combined.compile(loss=self.wasserstein_loss, optimizer=self.optimizer)
+            # self.generator = self.build_generator()
+            self.generator = Generator(self.latent_dims, self.gen_units, self.dropout, self.n_output)
+            # self.critic = critic.build((1, 20, self.n_output))
+            # print(type(critic), type(self.critic))
+            # print(help(critic.build))
             # ------------------------------------------------------------------------------
 
-            checkpoint = tf.train.Checkpoint(g_optimizer=g_optimizer,
-                                             d_optimizer=c_optimizer,
-                                             generator=generator,
-                                             critic=critic,
-                                             combined=combined
+            checkpoint = tf.train.Checkpoint(g_optimizer=self.g_optimizer,
+                                             c_optimizer=self.c_optimizer,
+                                             generator=self.generator,
+                                             critic=self.critic
                                              )
             if not os.path.exists(self.checkpoint_dir):
                 os.mkdir(self.checkpoint_dir)
             ckpt_manager = tf.train.CheckpointManager(checkpoint, self.checkpoint_dir, max_to_keep=3)
             if ckpt_manager.latest_checkpoint:
                 print(f'Models already exist, resuming training from epoch {self.prev_epochs + 1}...')
-                old_combined_weights = pickle.load(open(os.path.join(self.root, 'combined_weights.pkl'), 'rb'))
-                old_critic_weights = pickle.load(open(os.path.join(self.root, 'critic_weights.pkl'), 'rb'))
-                print(type(old_combined_weights))
-                print(type(old_critic_weights))
-
                 checkpoint.restore(ckpt_manager.latest_checkpoint)
-                critic.trainable = True
-                critic.compile(loss=self.wasserstein_loss, optimizer=c_optimizer)
-                critic.trainable = False
-                combined.compile(loss=self.wasserstein_loss, optimizer=g_optimizer)
-                '''
-                print([np.mean((old_combined_weights[i] == combined.get_weights()[i]).flatten()) for i in
-                       range(len(old_combined_weights))])
-                print([np.mean((old_critic_weights[i] == critic.get_weights()[i]).flatten()) for i in
-                       range(len(old_critic_weights))])
-                print([old_critic_weights[i] == critic.get_weights()[i] for i in range(len(critic))])
-                print(old_critic_weights[1] == critic.get_weights()[1])
-                raise ValueError('Nope')
-                '''
+                # old_generator_weights = pickle.load(open(os.path.join(self.root, 'generator_weights.pkl'), 'rb'))
+                # old_critic_weights = pickle.load(open(os.path.join(self.root, 'critic_weights.pkl'), 'rb'))
+                # print(old_generator_weights[0] == self.generator.get_weights()[0])
+                # print(old_critic_weights[0] == self.critic.get_weights()[0])
+                # raise ValueError('Nope')
+
 
             real = -np.ones((batch_size, 1))
             fake = np.ones((batch_size, 1))
 
-            for epoch in range(epochs):
+            for epoch in range(self.prev_epochs, epochs):
                 rng.shuffle(sne)
-                g_losses, d_losses, real_predictions, fake_predictions = [], [], [], []
+                g_losses, c_losses, real_predictions, fake_predictions = [], [], [], []
                 t = trange(n_batches)
                 for batch in t:
+                    sn = sne[batch]
+                    sndf = self.train_df[self.train_df.sn == sn]
+                    if self.mode == 'observed':
+                        X = sndf[['g_t', 'r_t', 'i_t', 'z_t', 'g', 'r', 'i', 'z', 'g_err',
+                                  'r_err', 'i_err', 'z_err']].values
+                    elif self.mode == 'template':
+                        X = sndf[['t', 'g', 'r', 'i', 'z']].values
+
+                    X_np = X.copy()
+                    X = tf.convert_to_tensor(X.reshape((1, *X.shape)))
+                    real_pred, fake_pred, g_loss, c_loss = self.train_step(X, epoch)
+
+                    g_losses.append(g_loss)
+                    c_losses.append(c_loss)
+                    real_predictions.append(real_pred)
+                    fake_predictions.append(fake_pred)
+                    t.set_description(f'g_loss={np.around(np.mean(g_losses), 5)},'
+                                      f' d_loss={np.around(np.mean(c_losses), 5)}')
+                    t.refresh()
+                    '''
                     # Select real data
                     sn = sne[batch]
                     sndf = self.train_df[self.train_df.sn == sn]
@@ -670,7 +721,6 @@ class WGAN:
                     elif self.mode == 'template':
                         X = sndf[['t', 'g', 'r', 'i', 'z']].values
 
-                    sn_type = X[0, -1]
                     X = X.reshape((1, *X.shape))
 
                     if np.count_nonzero(np.isnan(X)) > 0:
@@ -712,37 +762,47 @@ class WGAN:
                     t.set_description(f'g_loss={np.around(np.mean(g_losses), 5)},'
                                       f' d_loss={np.around(np.mean(d_losses), 5)}')
                     t.refresh()
-                print(combined.get_layer(index=2).get_weights()[0])
-                print(combined.get_layer(index=2).get_weights()[0] == critic.get_weights()[0])
-                if os.path.exists(os.path.join(self.root, 'combined_weights.pkl')):
-                    os.remove(os.path.join(self.root, 'combined_weights.pkl'))
-                pickle.dump(combined.get_weights(), open(os.path.join(self.root, 'combined_weights.pkl'), 'wb'))
+                    '''
+
+                '''
+                if os.path.exists(os.path.join(self.root, 'generator_weights.pkl')):
+                    os.remove(os.path.join(self.root, 'generator_weights.pkl'))
+                pickle.dump(self.generator.get_weights(), open(os.path.join(self.root, 'generator_weights.pkl'), 'wb'))
                 if os.path.exists(os.path.join(self.root, 'critic_weights.pkl')):
                     os.remove(os.path.join(self.root, 'critic_weights.pkl'))
-                pickle.dump(critic.get_weights(), open(os.path.join(self.root, 'critic_weights.pkl'), 'wb'))
+                pickle.dump(self.critic.get_weights(), open(os.path.join(self.root, 'critic_weights.pkl'), 'wb'))
+                '''
+
                 ckpt_manager.save()
                 full_g_loss = np.mean(g_losses)
-                full_d_loss = np.mean(d_losses)
-                print(f'{epoch + 1}/{epochs} g_loss={full_g_loss}, d_loss={full_d_loss}, '
+                full_c_loss = np.mean(c_losses)
+                print(f'{epoch + 1}/{epochs} g_loss={full_g_loss}, c_loss={full_c_loss}, '
                       f'Real prediction: {np.mean(real_predictions)} +- {np.std(real_predictions)}, '
                       f'Fake prediction: {np.mean(fake_predictions)} +- {np.std(fake_predictions)}')
-                      # f' Ranges: x [{np.min(gen_lcs[:, :, 0])}, {np.max(gen_lcs[:, :, 0])}], '
-                      # f'y [{np.min(gen_lcs[:, :, 1])}, {np.max(gen_lcs[:, :, 1])}]')
+                # f' Ranges: x [{np.min(gen_lcs[:, :, 0])}, {np.max(gen_lcs[:, :, 0])}], '
+                # f'y [{np.min(gen_lcs[:, :, 1])}, {np.max(gen_lcs[:, :, 1])}]')
+
+                noise = rand.normal(size=(batch_size, self.latent_dims))
+                noise = np.reshape(noise, (batch_size, 1, self.latent_dims))
+                noise = np.repeat(noise, X.shape[1], 1)
+
+                gen_lcs = self.generator.predict(noise)
+                if np.count_nonzero(np.isnan(gen_lcs)) > 0:
+                    raise ValueError('NaN generated, check how this happened')
 
                 plot_test = gen_lcs[0, :, :]
                 fig = plt.figure(figsize=(12, 8))
                 x = plot_test[:, 0]
-                X = X.reshape((*X.shape[1:],))
                 for f_ind, f in enumerate(['g', 'r', 'i', 'z']):
                     ax = fig.add_subplot(2, 2, f_ind + 1)
                     if self.mode == 'observed':
                         x, y, y_err = plot_test[:, f_ind], plot_test[:, f_ind + 4], plot_test[:, f_ind + 8]
                         ax.errorbar(x, y, yerr=y_err, label=f, fmt='x')
-                        ax.errorbar(X[:, f_ind], X[:, f_ind + 4], yerr=X[:, f_ind + 8], fmt='x')
+                        ax.errorbar(X_np[:, f_ind], X_np[:, f_ind + 4], yerr=X_np[:, f_ind + 8], fmt='x')
                     elif self.mode == 'template':
                         y = plot_test[:, f_ind + 1]
                         ax.scatter(x, y, label=f)
-                        ax.scatter(X[:, 0], X[:, f_ind + 1])
+                        ax.scatter(X_np[:, 0], X_np[:, f_ind + 1])
                     ax.legend()
                 plt.suptitle(f'Epoch {epoch + 1}/{epochs}')  #: Type {self.class_label_dict[sn_type]}')
                 plt.savefig(os.path.join(self.root, 'Train_plots', f'{epoch + 1}.png'))
@@ -840,7 +900,7 @@ class WGAN:
             gdf['t'] = gdf['t'] * (self.scaling_factors[1] - self.scaling_factors[0]) + self.scaling_factors[0]
             for f in ['g', 'r', 'i', 'z']:
                 gdf[f] = gdf[f] * ((self.scaling_factors[3] - self.scaling_factors[2]) / 2) + \
-                            np.mean([self.scaling_factors[3], self.scaling_factors[2]])
+                         np.mean([self.scaling_factors[3], self.scaling_factors[2]])
             if all_gen_df is None:
                 all_gen_df = gdf.copy()
             else:
