@@ -41,9 +41,10 @@ class Critic(Model):
             x = self.dr2(x, training=training)
         return self.gru3(x)
 
+
 class Generator(Model):
-    def __init__(self, latent_dims, units, dropout, n_output):
-        super(Generator, self).__init__(latent_dims, units, dropout, n_output)
+    def __init__(self, latent_dims=10, units=100, dropout=0.5, n_output=12):
+        super(Generator, self).__init__()
         self.gru1 = GRU(units, return_sequences=True, activation='relu')
         self.dr1 = Dropout(dropout)
         self.gru2 = GRU(units, return_sequences=True, activation='relu')
@@ -611,10 +612,7 @@ class WGAN:
             noise = tf.repeat(noise, X.shape[1], 1)
 
             real_data_real_label = self.critic.call(X, training=True)
-            print(real_data_real_label)
-            self.critic.summary()
-            raise ValueError('Nope')
-            gen_lcs = self.generator(noise)
+            gen_lcs = self.generator(noise, training=True)
             fake_data_fake_label = self.critic(gen_lcs, training=True)
 
             noise = tf.random.normal((2, self.latent_dims))
@@ -631,10 +629,6 @@ class WGAN:
         # print('Generator: ', fake_data_real_label, gen_loss)
         # print('Critic: ', fake_data_fake_label, real_data_real_label, crit_loss)
         crit_gradients = disc_tape.gradient(crit_loss, self.critic.trainable_variables)
-        print(self.critic.trainable_variables)
-        print(self.critic.summary())
-        print(crit_gradients)
-        raise ValueError('Nope')
         gen_gradients = gen_tape.gradient(gen_loss, self.generator.trainable_variables)
         self.c_optimizer.apply_gradients(zip(crit_gradients, self.critic.trainable_variables))
         self.g_optimizer.apply_gradients(zip(gen_gradients, self.generator.trainable_variables))
