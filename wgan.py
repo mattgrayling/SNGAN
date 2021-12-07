@@ -107,7 +107,7 @@ class WGAN:
         else:
             self.n_output = 5
         if self.data_type == 'sim':
-            self.name = f'WGAN_DES_sim_{sn_type}_CCSNe_{self.mode}_lr{self.lr}_ld{self.latent_dims}_GP{self.GP}' \
+            self.name = f'WGAN_chkpt_DES_sim_{sn_type}_CCSNe_{self.mode}_lr{self.lr}_ld{self.latent_dims}_GP{self.GP}' \
                         f'_zlim{self.z_lim}_bn{self.batch_norm}_gN{self.gen_units}_cN{self.crit_units}'
         else:
             raise ValueError('Not implemented for real data')
@@ -612,15 +612,15 @@ class WGAN:
             noise = tf.repeat(noise, X.shape[1], 1)
 
             real_data_real_label = self.critic.call(X, training=True)
-            gen_lcs = self.generator(noise, training=True)
-            fake_data_fake_label = self.critic(gen_lcs, training=True)
+            gen_lcs = self.generator.call(noise, training=True)
+            fake_data_fake_label = self.critic.call(gen_lcs, training=True)
 
             noise = tf.random.normal((2, self.latent_dims))
             noise = tf.reshape(noise, (2, 1, self.latent_dims))
             noise = tf.repeat(noise, X.shape[1], 1)
 
             gen_lcs = self.generator(noise)
-            fake_data_real_label = self.critic(gen_lcs, training=True)
+            fake_data_real_label = self.critic.call(gen_lcs, training=True)
 
             # Calculate losses---------------------------------------------------
             gen_loss = self.wasserstein_loss(tf.fill(tf.shape(fake_data_real_label), -1.), fake_data_real_label)
