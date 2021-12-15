@@ -20,6 +20,9 @@ import time
 
 
 class GAN:
+    """
+    GAN implementation for supernova light curve generation
+    """
     def __init__(self, latent_dims=100, lr=0.00001, gen_activation='sigmoid', device='gpu:0', labels='hard', GP=True,
                  generator_type='dense', cadence=None, data_type='sim', z_lim=None, batch_norm=False, error=False,
                  frame='obs', dropout=0.5, units=100):
@@ -30,8 +33,6 @@ class GAN:
         self.labels = labels
         self.GP = GP
         self.generator_type = generator_type
-        self.cadence = cadence
-        self.data_type = data_type
         self.z_lim = z_lim
         self.batch_norm = batch_norm
         self.error = error
@@ -42,11 +43,7 @@ class GAN:
             self.n_output = 12
         else:
             self.n_output = 5
-        if self.data_type == 'real':
-            self.name = f'DES_real_CCSNe_{self.gen_activation}_lr{self.lr}_ld{self.latent_dims}_labels{self.labels}' \
-                        f'_GP{self.GP}_{self.generator_type}_err{self.error}'
-        elif self.data_type == 'sim':
-            self.name = f'DES_sim_CCSNe_{self.gen_activation}_lr{self.lr}_ld{self.latent_dims}_labels{self.labels}' \
+        self.name = f'DES_sim_CCSNe_{self.gen_activation}_lr{self.lr}_ld{self.latent_dims}_labels{self.labels}' \
                         f'_GP{self.GP}_zlim{self.z_lim}_{self.generator_type}_bn{self.batch_norm}_N{self.units}'
         if self.error:
             self.root = os.path.join('Data', 'Models', 'err', self.name)
@@ -54,15 +51,9 @@ class GAN:
             self.root = os.path.join('Data', 'Models', 'noerr', self.name)
         if not os.path.exists(self.root):
             os.mkdir(self.root)
-        if self.data_type == 'real':
-            self.dataset_name = f'DES_real_GP{self.GP}_cadence{self.cadence}_{self.generator_type}'
-            self.dataset_path = os.path.join('Data', 'Datasets', f'{self.dataset_name}.csv')
-        elif self.data_type == 'sim':
-            self.dataset_name = f'DES_sim_GP{self.GP}_zlim{self.z_lim}_cadence{self.cadence}_{self.generator_type}' \
-                                f'_error{self.error}'
-            self.dataset_path = os.path.join('Data', 'Datasets', f'{self.dataset_name}.csv')
-        else:
-            raise ValueError('Invalid dataset type, must be either real or sim')
+        self.dataset_name = f'DES_sim_GP{self.GP}_zlim{self.z_lim}_cadence{self.cadence}_{self.generator_type}' \
+                            f'_error{self.error}'
+        self.dataset_path = os.path.join('Data', 'Datasets', f'{self.dataset_name}.csv')
         if os.path.exists(self.dataset_path):
             self.train_df = pd.read_csv(self.dataset_path)
             self.scaling_factors = pickle.load(open(os.path.join('Data', 'Datasets', f'{self.dataset_name}'
@@ -104,401 +95,179 @@ class GAN:
             print(self.combined.summary())
 
     def __prepare_dataset__(self):
+        data_dir = 'Data/DESSIMBIAS5YRCC_V19/PIP_MV_GLOBAL_BIASCOR_DESSIMBIAS5YRCC_V19'
+        x = os.listdir(data_dir)
+        x.sort()
 
-        if self.data_type == 'real':
-            # Some overall setup stuff----------------------------------------------------
-            years = [(56500, 56750), (56850, 57100), (57200, 57450), (57600, 57850),
-                     (57900, 58200)]  # rough boundaries of each observing period in MJD
-            years_conv = {13: 0, 14: 1, 15: 2, 16: 3, 17: 4}
-            zp_ab = {'g': 20.802, 'r': 21.436, 'i': 21.866, 'z': 22.214}
-            exp_data = pd.read_pickle('Data/exp_date.pkl')
-            R_v = 3.1
+        all_df = None
 
-            # Start by calculating upper and lower bounds for each band and in time----------------------------
-
-            des_df = pd.read_csv('Data/sn_max_data_all_err_H070_host_colour+mag_ext.csv')
-            des_df = des_df[des_df.rest_filter == 'R']
-
-            all_min_xs, all_max_xs, all_x_lims = [], [], {}
-            all_max_fluxes = {f: [] for f in ['g', 'r', 'i', 'z']}
-            all_min_mags, all_max_mags = {f: [] for f in ['g', 'r', 'i', 'z']}, {f: [] for f in ['g', 'r', 'i', 'z']}
-            all_exp_dates = []
-            all_keep_data = {}
-
-            for i, row in des_df.reset_index().iterrows():
-                sn, snid, z = row.sn, row.sn_id, row.z_sn
-                filename = f'des_real_0{snid}.dat'
-                data_df = pd.read_csv(os.path.join('Data', 'SN_Data', filename), skiprows=55, usecols=[1, 2, 4, 5],
-                                      delim_whitespace=True, header=None, names=['mjd', 'filt', 'flux', 'flux_err'],
-                                      comment='#')
-                fp = open(os.path.join('Data', 'SN_Data', filename))
-
-                for line in fp:
-                    if line[0:4] == 'IAUC':
-                        maxyear = years_conv[int(line.split()[1][3:5])]
-                        name = line.split()[1]
-                    if line[0:4] == 'SNID':
-                        id = line.split()[1]
-                    if line[0:2] == 'RA':
-                        RA = line.split()[1]
-                    if line[0:4] == 'DECL':
-                        Dec = line.split()[1]
-                    if line[0:13] == 'HOSTGAL_SPECZ':
-                        z = float(line.split()[1])
-                        break
-
-                if z < 0:
-                    continue
-
-                fp.close()
-
-                df = data_df[
-                    (years[maxyear][0] < data_df.mjd) & (
-                            data_df.mjd < years[maxyear][1])]  # Select only for year that SN occurs
-
-                # Identify explosion date----------------------------------------------------
-                exp_dates = []
-
-                for f_ind, f in enumerate(['g', 'r', 'i', 'z']):
-                    # Open data--------------------------------------------------------------
-                    df_filt = df[df.filt == f]
-
-                    mjd = df_filt.mjd.values
-                    flux = df_filt.flux.values
-                    flux_err = df_filt.flux_err.values
-
-                    z_p = zp_ab[f]
-
-                    # Convert to f_lambda----------------------------------------------------
-                    flux = flux * 1e-11 * 10 ** (-0.4 * z_p)
-                    flux_err = 1e-11 * 10 ** (-0.4 * z_p) * flux_err
-
-                    # Determine start of explosion and apply cut-----------------------------
-                    exp_date = None
-                    f_max = flux[np.argmax((flux - flux_err) / flux_err)]
-                    if np.argmax(flux) == 0 or flux[0] - 4 * flux_err[0] > 0:
-                        if any(exp_data.SN == name):
-                            exp_date = exp_data[exp_data.SN == name].values[0][1]
-                            exp_dates.append(exp_date)
-                        else:
-                            continue
+        print('Reading in files...')
+        for file in tqdm(x):
+            if 'HEAD' in file:
+                head_file = file
+                phot_file = file.replace('HEAD', 'PHOT')
+                head = Table.read(os.path.join(data_dir, head_file), hdu=1)
+                head_df = head.to_pandas()
+                head_df = head_df[head_df.HOSTGAL_SPECZ < self.z_lim]
+                head_df = head_df[head_df.NOBS > 20]
+                for col, dtype in head_df.dtypes.items():
+                    if dtype == object:  # Only process byte object columns.
+                        head_df[col] = head_df[col].apply(lambda x: x.decode("utf-8").lstrip().rstrip())
+                phot = Table.read(os.path.join(data_dir, phot_file), hdu=1)
+                phot_df = phot.to_pandas()
+                for col, dtype in phot_df.dtypes.items():
+                    if dtype == object:  # Only process byte object columns.
+                        phot_df[col] = phot_df[col].apply(lambda x: x.decode("utf-8").lstrip().rstrip())
+                phot_df['mag'] = -2.5 * np.log10(phot_df.FLUXCAL) + 27
+                phot_df['mag_err'] = (2.5 / np.log(10)) * phot_df.FLUXCALERR / phot_df.FLUXCAL
+                for i, row in head_df.reset_index().iterrows():
+                    sn_phot_df = phot_df.iloc[row.PTROBS_MIN:row.PTROBS_MAX + 1, :]
+                    sn_phot_df = sn_phot_df[sn_phot_df.MJD > 50000]
+                    sn_phot_df['t'] = (sn_phot_df.MJD - row.SIM_PEAKMJD) / (1 + row.HOSTGAL_SPECZ)
+                    sn_phot_df = sn_phot_df[['t', 'FLT', 'mag', 'mag_err']]
+                    sn_phot_df['sn'] = row.SNID
+                    if all_df is None:
+                        all_df = sn_phot_df.copy()
                     else:
-                        for ind, val in enumerate(flux):
-                            try:
-                                if val - 4 * flux_err[ind] > 0 and ((val < flux[ind + 1] < flux[ind + 2] and
-                                                                     flux[ind + 1] > f_max / 5) or val > f_max / 3):
-                                    exp_date = (mjd[ind] + mjd[ind - 1]) / 2
-                                    exp_dates.append(exp_date)
-                                    break
-                            except:
-                                break
-                    if exp_date is None:
-                        continue
+                        all_df = pd.concat([all_df, sn_phot_df])
+            else:
+                continue
 
-                exp_date = np.min(exp_dates)
-                all_exp_dates.append(exp_date)
+        # Drop nans and infs, they only cause problems!
+        all_df = all_df[~(np.isnan(all_df.mag) | np.isinf(all_df.mag))]
 
-                # Get data epochs------------------------------------------------------------
-                min_x, max_x = [], []
-                all_times = []
+        # Get bounds for light curve scaling and rescale so between 0 and 1
+        min_t, max_t = all_df.t.min(), all_df.t.max()
+        min_mag, max_mag = all_df.mag.max(), all_df.mag.min()
+        all_df = all_df[all_df.mag_err < 1]  # Remove points with magnitude uncertainties greater than 1 mag
+        scaled_mag = all_df['mag'].values - np.mean([min_mag, max_mag])
+        scaled_mag /= (max_mag - min_mag) / 2
+        all_df['mag'] = scaled_mag
+        all_df['mag_err'] /= np.abs(max_mag - min_mag) / 2
+        all_df = all_df[~(all_df.mag < 0.1)]  # Remove bad points # & (all_df.mag_err > 0.5))]
 
-                lens = []
-                keep_data = {}
+        if self.generator_type == 'dense':  # Need same length input for all SNe if using this type of generator
+            if self.cadence is None:
+                raise ValueError('Please specify a cadence to use for this data')
+            all_t = (np.arange(min_t, max_t, self.cadence) - min_t) / (max_t - min_t)
+            all_df['t'] = (all_df['t'] - min_t) / (max_t - min_t)
 
-                for f_ind, f in enumerate(['g', 'r', 'i', 'z']):
-                    # Open data--------------------------------------------------------------
-                    df_filt = df[df.filt == f]
-                    mjd = df_filt.mjd.values
-                    flux = df_filt.flux.values
-                    flux_err = df_filt.flux_err.values
+        all_new_df = None
+        used_count, skip_count = 0, 0
 
-                    flux = flux[mjd > exp_date]
-                    flux_err = flux_err[mjd > exp_date]
-                    mjd = mjd[mjd > exp_date]
+        sn_list = list(all_df.sn.unique())
 
-                    z_p = zp_ab[f]
-
-                    # Convert to f_lambda----------------------------------------------------
-                    flux = flux * 1e-11 * 10 ** (-0.4 * z_p)
-                    flux_err = 1e-11 * 10 ** (-0.4 * z_p) * flux_err
-
-                    # Convert to mags--------------------------------------------------------
-                    mag = -2.5 * np.log10(flux) - zp_ab[f]
-                    mag_err = (2.5 * flux_err / (flux * np.log(10)))
-
-                    mjd = mjd[~(np.isnan(mag) | np.isinf(mag))]
-                    flux = flux[~(np.isnan(mag) | np.isinf(mag))]
-                    flux_err = flux_err[~(np.isnan(mag) | np.isinf(mag))]
-                    mag_err = mag_err[~(np.isnan(mag) | np.isinf(mag))]
-                    mag = mag[~(np.isnan(mag) | np.isinf(mag))]
-
-                    x = (mjd - exp_date) / (1 + z)
-                    keep_data[f] = [x, flux, flux_err, mag, mag_err]
-                    min_x.append(np.min(x))
-                    max_x.append(np.max(x))
-                    all_max_fluxes[f].append(np.max(flux))
-                    all_min_mags[f].append(np.nanmax(mag))
-                    all_max_mags[f].append(np.nanmin(mag))
-                all_min_xs.append(np.max(min_x))
-                all_max_xs.append(np.min(max_x))
-                all_x_lims[sn] = (np.max(min_x), np.min(max_x))
-                all_keep_data[sn] = [exp_date, keep_data]
-
-            x_lims = (np.min(all_min_xs), np.max(all_max_xs))
-            max_fluxes = {f: np.max(all_max_fluxes[f]) for f in ['g', 'r', 'i', 'z']}
-            mag_lims = {f: (np.max(all_min_mags[f]), np.min(all_max_mags[f])) for f in ['g', 'r', 'i', 'z']}
-
-            if self.cadence is not None:
-                t = np.arange(x_lims[0], x_lims[1], self.cadence)
-
-            all_df = None
-
-            for i, row in des_df.reset_index().iterrows():
-                sn, snid, z = row.sn, row.sn_id, row.z_sn
-                if sn not in all_keep_data.keys():
-                    continue
-                exp_date, data = all_keep_data[sn]
-
-                sn_dict = {'t': (t - t.mean()) / (t.max() / 2)}
-                for f_ind, f in enumerate(['g', 'r', 'i', 'z']):
-                    x, flux, flux_err, mag, mag_err = data[f]
-
-                    # If mode == GP, GP all data--------------------------------------------
-                    if self.GP and self.cadence is not None:
-                        if self.mode == 'flux':
-                            y, y_err = flux, flux_err
-                        elif self.mode == 'mag':
-                            y, y_err = mag, mag_err
-
-                        scale = np.max(y)
-                        y, y_err = y / scale, y_err / scale
-
-                        gp = george.GP(Matern32Kernel(500))
-
-                        # Gradient function for optimisation of kernel size------------------------------
-
-                        def ll(p):
-                            gp.set_parameter_vector(p)
-                            return -gp.log_likelihood(y, quiet=True)
-
-                        def grad_ll(p):
-                            gp.set_parameter_vector(p)
-                            return -gp.grad_log_likelihood(y, quiet=True)
-
-                        gp.compute(x, y_err)
-                        p0 = gp.kernel.get_parameter_vector()[0]
-
-                        results = spopt.minimize(ll, p0, jac=grad_ll)
-
-                        mu, cov = gp.predict(y, t)
-                        std = np.sqrt(np.diag(cov))
-
-                        mu, std = mu * scale, std * scale
-
-                        if self.mode == 'flux':
-                            for ind, val in enumerate(t):
-                                if val < all_x_lims[sn][0] or val > all_x_lims[sn][1]:
-                                    mu[ind] = 0
-                                    std[ind] = 0
-                            mu /= (max_fluxes[f] / 2)
-                            mu -= 1
-                        elif self.mode == 'mag':
-                            for ind, val in enumerate(t):
-                                if val < all_x_lims[sn][0] or val > all_x_lims[sn][1]:
-                                    mu[ind] = mag_lims[f][0]
-                                    std[ind] = 0
-                            mu -= np.mean(mag_lims[f])
-                            # mu *= -1
-                            mu /= (mag_lims[f][1] - mag_lims[f][0]) / 2
-                        sn_dict[f] = mu
-                        sn_dict[f'{f}_err'] = std
-                    else:
-                        raise ValueError('This setting for mode and cadence has not yet been implemented')
-                sn_df = pd.DataFrame(sn_dict)
-                sn_df['sn'] = sn
-                if all_df is None:
-                    all_df = sn_df
-                else:
-                    all_df = pd.concat([all_df, sn_df])
-            scaling_factors = [x_lims, max_fluxes, mag_lims]
-            all_df.to_csv(os.path.join('Data', 'Datasets', f'{self.dataset_name}.csv'))
-            pickle.dump(scaling_factors,
-                        open(os.path.join('Data', 'Datasets', f'{self.dataset_name}_scaling_factors.pkl'), 'wb'))
-            return all_df, scaling_factors
-        elif self.data_type == 'sim':
-            data_dir = 'Data/DESSIMBIAS5YRCC_V19/PIP_MV_GLOBAL_BIASCOR_DESSIMBIAS5YRCC_V19'
-            x = os.listdir(data_dir)
-            x.sort()
-
-            all_df = None
-
-            print('Reading in files...')
-            for file in tqdm(x):
-                if 'HEAD' in file:
-                    head_file = file
-                    phot_file = file.replace('HEAD', 'PHOT')
-                    head = Table.read(os.path.join(data_dir, head_file), hdu=1)
-                    head_df = head.to_pandas()
-                    head_df = head_df[head_df.HOSTGAL_SPECZ < self.z_lim]
-                    head_df = head_df[head_df.NOBS > 20]
-                    for col, dtype in head_df.dtypes.items():
-                        if dtype == object:  # Only process byte object columns.
-                            head_df[col] = head_df[col].apply(lambda x: x.decode("utf-8").lstrip().rstrip())
-                    phot = Table.read(os.path.join(data_dir, phot_file), hdu=1)
-                    phot_df = phot.to_pandas()
-                    for col, dtype in phot_df.dtypes.items():
-                        if dtype == object:  # Only process byte object columns.
-                            phot_df[col] = phot_df[col].apply(lambda x: x.decode("utf-8").lstrip().rstrip())
-                    phot_df['mag'] = -2.5 * np.log10(phot_df.FLUXCAL) + 27
-                    phot_df['mag_err'] = (2.5 / np.log(10)) * phot_df.FLUXCALERR / phot_df.FLUXCAL
-                    for i, row in head_df.reset_index().iterrows():
-                        sn_phot_df = phot_df.iloc[row.PTROBS_MIN:row.PTROBS_MAX + 1, :]
-                        sn_phot_df = sn_phot_df[sn_phot_df.MJD > 50000]
-                        sn_phot_df['t'] = (sn_phot_df.MJD - row.SIM_PEAKMJD) / (1 + row.HOSTGAL_SPECZ)
-                        sn_phot_df = sn_phot_df[['t', 'FLT', 'mag', 'mag_err']]
-                        sn_phot_df['sn'] = row.SNID
-                        if all_df is None:
-                            all_df = sn_phot_df.copy()
-                        else:
-                            all_df = pd.concat([all_df, sn_phot_df])
-                else:
-                    continue
-
-            # Drop nans and infs, they only cause problems!
-            all_df = all_df[~(np.isnan(all_df.mag) | np.isinf(all_df.mag))]
-
-            # Get bounds for light curve scaling and rescale so between 0 and 1
-            min_t, max_t = all_df.t.min(), all_df.t.max()
-            min_mag, max_mag = all_df.mag.max(), all_df.mag.min()
-            all_df = all_df[all_df.mag_err < 1]  # Remove points with magnitude uncertainties greater than 1 mag
-            scaled_mag = all_df['mag'].values - np.mean([min_mag, max_mag])
-            scaled_mag /= (max_mag - min_mag) / 2
-            all_df['mag'] = scaled_mag
-            all_df['mag_err'] /= np.abs(max_mag - min_mag) / 2
-            all_df = all_df[~(all_df.mag < 0.1)]  # Remove bad points # & (all_df.mag_err > 0.5))]
-
-            if self.generator_type == 'dense':  # Need same length input for all SNe if using this type of generator
-                if self.cadence is None:
-                    raise ValueError('Please specify a cadence to use for this data')
-                all_t = (np.arange(min_t, max_t, self.cadence) - min_t) / (max_t - min_t)
-                all_df['t'] = (all_df['t'] - min_t) / (max_t - min_t)
-
-            all_new_df = None
-            used_count, skip_count = 0, 0
-
-            sn_list = list(all_df.sn.unique())
-
-            for i, sn in tqdm(enumerate(sn_list), total=len(sn_list)):
-                sn_df = all_df[all_df.sn == sn]
-                if self.generator_type == 'rnn' and not self.error:
-                    # If rnn, can have different length inputs for each SN but still need to have same number of data
-                    # points in each band, this section calculates the times to use for each SN
-                    min_times, max_times = [], []
-                    for f in ['g', 'r', 'i', 'z']:
-                        fdf = sn_df[sn_df.FLT == f]
-                        min_times.append(fdf.t.min())
-                        max_times.append(fdf.t.max())
-                    all_t = sn_df['t'].values
-
-                    all_t = all_t[all_t >= np.max(min_times)]
-                    all_t = all_t[all_t <= np.min(max_times)]
-                    all_t = (all_t - min_t) / (max_t - min_t)
-                    ind = 0
-                    while True:
-                        if ind == len(all_t):
-                            break
-                        val = all_t[-(ind + 1)]
-                        if any(np.abs(all_t[all_t != val] - val) < (1.0 / (max_t - min_t))):
-                            all_t = np.delete(all_t, -(ind + 1))
-                        else:
-                            ind += 1
-                if not self.error:
-                    new_sn_df = pd.DataFrame(all_t, columns=['t'])
-                else:
-                    new_sn_df = pd.DataFrame()
-                    lens = [sn_df[sn_df.FLT == f].shape[0] for f in ['g', 'r', 'i', 'z']]
-                    if np.std(lens) > 0:
-                        use_len = np.min(lens)
-                    else:
-                        use_len = lens[0]
-
-                skip = False
-                plt.close('all')
-                plt.figure()
+        for i, sn in tqdm(enumerate(sn_list), total=len(sn_list)):
+            sn_df = all_df[all_df.sn == sn]
+            if self.generator_type == 'rnn' and not self.error:
+                # If rnn, can have different length inputs for each SN but still need to have same number of data
+                # points in each band, this section calculates the times to use for each SN
+                min_times, max_times = [], []
                 for f in ['g', 'r', 'i', 'z']:
-                    fdf = sn_df[sn_df.FLT == f] # .sort_values('t')
-                    gp = george.GP(Matern32Kernel(1))
-                    if self.error:
-                        if use_len < fdf.shape[0]:
-                            drop_count = fdf.shape[0] - use_len
-                            skip_num = int(np.floor(drop_count / 2))
-                            fdf = fdf.iloc[skip_num: skip_num + use_len, :]
-                        t = (fdf.t - min_t) / (max_t - min_t)
-                        new_sn_df[f'{f}_t'] = t.values
+                    fdf = sn_df[sn_df.FLT == f]
+                    min_times.append(fdf.t.min())
+                    max_times.append(fdf.t.max())
+                all_t = sn_df['t'].values
+
+                all_t = all_t[all_t >= np.max(min_times)]
+                all_t = all_t[all_t <= np.min(max_times)]
+                all_t = (all_t - min_t) / (max_t - min_t)
+                ind = 0
+                while True:
+                    if ind == len(all_t):
+                        break
+                    val = all_t[-(ind + 1)]
+                    if any(np.abs(all_t[all_t != val] - val) < (1.0 / (max_t - min_t))):
+                        all_t = np.delete(all_t, -(ind + 1))
                     else:
-                        t = (fdf.t - min_t) / (max_t - min_t)
-                    sn_t_min, sn_t_max = np.min(t), np.max(t)
-                    y = fdf.mag
-                    y_err = fdf.mag_err
-
-                    # Gradient function for optimisation of kernel size------------------------------
-
-                    def ll(p):
-                        gp.set_parameter_vector(p)
-                        return -gp.log_likelihood(y, quiet=True)
-
-                    def grad_ll(p):
-                        gp.set_parameter_vector(p)
-                        return -gp.grad_log_likelihood(y, quiet=True)
-
-                    try:
-                        gp.compute(t, y_err)
-                        p0 = gp.kernel.get_parameter_vector()[0]
-                        results = spopt.minimize(ll, p0, jac=grad_ll)
-                        if self.error:
-                            mu, cov = gp.predict(y, t)
-                        else:
-                            mu, cov = gp.predict(y, all_t)
-                        std = np.sqrt(np.diag(cov))
-                    except:
-                        skip = True
-                        continue
-                    if self.generator_type == 'dense':
-                        mu[(all_t < sn_t_min) | (all_t > sn_t_max)] = 0
-                        std[(all_t < sn_t_min) | (all_t > sn_t_max)] = 0
-                    if self.error:
-                        test_t, test_mu = t[mu > 0], mu[mu > 0]
-                    else:
-                        test_t, test_mu = all_t[mu > 0], mu[mu > 0]
-                    if len(test_mu) == 0:
-                        skip = True
-                        continue
-                    if np.argmax(test_mu) == 0 or (np.argmin(test_mu) == 0 and np.argmax(test_mu) == len(test_mu) - 1)\
-                            or len(mu[mu > 0.01]) < 8:
-                        skip = True
-                        continue
-                    if any(np.isnan(val) for val in mu):
-                        skip = True
-                    if np.count_nonzero(np.isnan(mu)) > 0:
-                        skip = True
-
-                    new_sn_df[f] = mu
-                    new_sn_df[f'{f}_err'] = std
-
-                new_sn_df['sn'] = sn
-                if skip:
-                    skip_count += 1
-                    continue
-                used_count += 1
-                if all_new_df is None:
-                    all_new_df = new_sn_df.copy()
+                        ind += 1
+            if not self.error:
+                new_sn_df = pd.DataFrame(all_t, columns=['t'])
+            else:
+                new_sn_df = pd.DataFrame()
+                lens = [sn_df[sn_df.FLT == f].shape[0] for f in ['g', 'r', 'i', 'z']]
+                if np.std(lens) > 0:
+                    use_len = np.min(lens)
                 else:
-                    all_new_df = pd.concat([all_new_df, new_sn_df])
-            all_new_df.to_csv(self.dataset_path)
-            scaling_factors = [min_t, max_t, min_mag, max_mag]
-            pickle.dump(scaling_factors,
-                        open(os.path.join('Data', 'Datasets', f'{self.dataset_name}_scaling_factors.pkl'), 'wb'))
-            return all_new_df, scaling_factors
+                    use_len = lens[0]
+
+            skip = False
+            plt.close('all')
+            plt.figure()
+            for f in ['g', 'r', 'i', 'z']:
+                fdf = sn_df[sn_df.FLT == f] # .sort_values('t')
+                gp = george.GP(Matern32Kernel(1))
+                if self.error:
+                    if use_len < fdf.shape[0]:
+                        drop_count = fdf.shape[0] - use_len
+                        skip_num = int(np.floor(drop_count / 2))
+                        fdf = fdf.iloc[skip_num: skip_num + use_len, :]
+                    t = (fdf.t - min_t) / (max_t - min_t)
+                    new_sn_df[f'{f}_t'] = t.values
+                else:
+                    t = (fdf.t - min_t) / (max_t - min_t)
+                sn_t_min, sn_t_max = np.min(t), np.max(t)
+                y = fdf.mag
+                y_err = fdf.mag_err
+
+                # Gradient function for optimisation of kernel size------------------------------
+
+                def ll(p):
+                    gp.set_parameter_vector(p)
+                    return -gp.log_likelihood(y, quiet=True)
+
+                def grad_ll(p):
+                    gp.set_parameter_vector(p)
+                    return -gp.grad_log_likelihood(y, quiet=True)
+
+                try:
+                    gp.compute(t, y_err)
+                    p0 = gp.kernel.get_parameter_vector()[0]
+                    results = spopt.minimize(ll, p0, jac=grad_ll)
+                    if self.error:
+                        mu, cov = gp.predict(y, t)
+                    else:
+                        mu, cov = gp.predict(y, all_t)
+                    std = np.sqrt(np.diag(cov))
+                except:
+                    skip = True
+                    continue
+                if self.generator_type == 'dense':
+                    mu[(all_t < sn_t_min) | (all_t > sn_t_max)] = 0
+                    std[(all_t < sn_t_min) | (all_t > sn_t_max)] = 0
+                if self.error:
+                    test_t, test_mu = t[mu > 0], mu[mu > 0]
+                else:
+                    test_t, test_mu = all_t[mu > 0], mu[mu > 0]
+                if len(test_mu) == 0:
+                    skip = True
+                    continue
+                if np.argmax(test_mu) == 0 or (np.argmin(test_mu) == 0 and np.argmax(test_mu) == len(test_mu) - 1)\
+                        or len(mu[mu > 0.01]) < 8:
+                    skip = True
+                    continue
+                if any(np.isnan(val) for val in mu):
+                    skip = True
+                if np.count_nonzero(np.isnan(mu)) > 0:
+                    skip = True
+
+                new_sn_df[f] = mu
+                new_sn_df[f'{f}_err'] = std
+
+            new_sn_df['sn'] = sn
+            if skip:
+                skip_count += 1
+                continue
+            used_count += 1
+            if all_new_df is None:
+                all_new_df = new_sn_df.copy()
+            else:
+                all_new_df = pd.concat([all_new_df, new_sn_df])
+        all_new_df.to_csv(self.dataset_path)
+        scaling_factors = [min_t, max_t, min_mag, max_mag]
+        pickle.dump(scaling_factors,
+                    open(os.path.join('Data', 'Datasets', f'{self.dataset_name}_scaling_factors.pkl'), 'wb'))
+        return all_new_df, scaling_factors
 
     def build_generator(self):
         with tf.device(self.device):
