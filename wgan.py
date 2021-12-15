@@ -24,10 +24,33 @@ import time
 
 
 class WGAN:
-    def __init__(self, latent_dims=100, lr=0.0005, device='gpu:0', GP=True, data_type='sim',
-                 z_lim=None, batch_norm=False, mode='template', dropout=0.5, gen_units=100, crit_units=100, sn_type='II'):
+    """
+
+    """
+    def __init__(self, latent_dims=100, clr=0.0005, glr=0.0005, device='gpu:0', GP=True, data_type='sim',
+                 z_lim=None, batch_norm=False, mode='template', g_dropout=0.5, c_dropout=0.5,
+                 gen_units=100, crit_units=100, sn_type='II', ds=1):
+        """
+        :param latent_dims: int, number of latent dimensions to draw random seed for generator from
+        :param clr: float, initial learning rate to use for critic
+        :param glr: float, initial learning rate to use for generator
+        :param device: string, device to use for model training
+        :param GP: Boolean, specifies whether to Gaussian Process interpolate training light curves
+        :param data_type: Boolean, specifies whether to train on real or simulated data
+        :param z_lim: float, upper redshift limit for sample
+        :param batch_norm: Boolean, specifies whether to apply batch normalisation to critic
+        :param mode: string, must be one of 'template' or 'observed'
+        :param g_dropout: float, dropout fraction to use in generator model
+        :param c_dropout: float, dropout fraction to use in critic model
+        :param gen_units: int, number of GRU units in each layer of generator model
+        :param crit_units: int, number of GRU units in each layer of generator model
+        :param sn_type: string, SN class to look at
+        :param ds: int, data structure for training. 1 for [band_time, band_mag, band_mag_err, etc.],
+                2 for [band_time, band_time, ..., band_mag, band_mag, ..., band_mag_err, band_mag_err, ...]
+        """
         self.latent_dims = latent_dims
-        self.lr = lr
+        self.clr = clr
+        self.glr = glr
         self.device = device
         self.GP = GP
         self.cosmo = FlatLambdaCDM(H0=70, Om0=0.3, Tcmb0=2.725)
@@ -35,15 +58,18 @@ class WGAN:
         self.z_lim = z_lim
         self.batch_norm = batch_norm
         self.mode = mode
+        self.ds = ds
         if self.mode.lower() not in ['template', 'observed']:
             raise ValueError('mode must be one of template and observed')
-        self.dropout = dropout
+        self.g_dropout = g_dropout
+        self.c_dropout = c_dropout
         self.gen_units = gen_units
         self.crit_units = crit_units
         # WGAN Paper guidance-----------------------------
         self.n_critic = 1
         self.clip_value = 0.01
-        self.optimizer = opt.RMSprop(lr=self.lr)
+        self.c_optimizer = opt.RMSprop(lr=self.clr)
+        self.g_optimizer = opt.RMSprop(lr=self.glr)
         # ------------------------------------------------
         # --
         type_dict = {}
@@ -68,8 +94,9 @@ class WGAN:
         else:
             self.n_output = 5
         if self.data_type == 'sim':
-            self.name = f'WGAN_DES_sim_{sn_type}_CCSNe_{self.mode}_lr{self.lr}_ld{self.latent_dims}_GP{self.GP}' \
-                        f'_zlim{self.z_lim}_bn{self.batch_norm}_gN{self.gen_units}_cN{self.crit_units}'
+            self.name = f'WGAN_DES_sim_{sn_type}_CCSNe_{self.mode}_clr{self.clr}_glr{self.glr}_ld{self.latent_dims}' \
+                        f'_GP{self.GP}_zlim{self.z_lim}_bn{self.batch_norm}_gN{self.gen_units}_cN{self.crit_units}' \
+                        f'_gd{self.g_dropout}_cd{self.c_dropout}_ds{self.ds}'
         else:
             raise ValueError('Not implemented for real data')
         self.root = os.path.join('Data', 'Models', 'WGAN', self.mode, self.name)
@@ -98,7 +125,7 @@ class WGAN:
 
             # Build discriminator
             self.critic = self.build_critic()
-            self.critic.compile(loss=self.wasserstein_loss, optimizer=self.optimizer)
+            self.critic.compile(loss=self.wasserstein_loss, optimizer=self.c_optimizer)
             print(self.critic.summary())
 
             # Build generator
@@ -115,10 +142,15 @@ class WGAN:
             valid = self.critic(lcs)
 
             self.combined = Model(i, valid)
-            self.combined.compile(loss=self.wasserstein_loss, optimizer=self.optimizer)
+            self.combined.compile(loss=self.wasserstein_loss, optimizer=self.g_optimizer)
             print(self.combined.summary())
 
     def __prepare_dataset__(self):
+        """
+        Builds dataset
+        :return: all_new_df, Pandas DataFrame containing training data
+                 scaling_factors, list of factor to scale numbers from 0 to 1 back to physical values
+        """
         if self.data_type == 'real':
             # Some overall setup stuff----------------------------------------------------
             years = [(56500, 56750), (56850, 57100), (57200, 57450), (57600, 57850),
@@ -537,24 +569,38 @@ class WGAN:
             return all_new_df, scaling_factors
 
     def wasserstein_loss(self, y_true, y_pred):
+        """
+        Loss function for Wasserstein GAN
+        :param y_true: True labels of data
+        :param y_pred: Output of critic model
+        :return: Loss
+        """
         return K.mean(y_true * y_pred)
 
     def build_generator(self):
+        """
+        Builds generator model
+        :return: model, keras Model object for generator
+        """
         with tf.device(self.device):
             input = Input(shape=(None, self.latent_dims))
             gru1 = GRU(self.gen_units, activation='relu', return_sequences=True)(input)
-            dr1 = Dropout(self.dropout)(gru1)
+            dr1 = Dropout(self.g_dropout)(gru1)
             gru2 = GRU(self.gen_units, activation='relu', return_sequences=True)(dr1)
-            dr2 = Dropout(self.dropout)(gru2)
+            dr2 = Dropout(self.g_dropout)(gru2)
             output = GRU(self.n_output, return_sequences=True, activation='sigmoid')(dr2)
             model = Model(input, output)
             return model
 
     def build_critic(self):
+        """
+        Builds critic model
+        :return: model, keras Model object for critic
+        """
         with tf.device(self.device):
             input = Input(shape=(None, self.n_output))
             gru1 = GRU(self.crit_units, return_sequences=True)(input)
-            dr1 = Dropout(self.dropout)(gru1)
+            dr1 = Dropout(self.c_dropout)(gru1)
             if self.batch_norm:
                 bn1 = BatchNormalization()(gru1)
                 gru2 = GRU(self.crit_units, return_sequences=True)(bn1)
@@ -562,12 +608,15 @@ class WGAN:
                 output = GRU(1, activation=None)(bn2)
             else:
                 gru2 = GRU(self.crit_units, return_sequences=True)(dr1)
-                dr2 = Dropout(self.dropout)(gru2)
+                dr2 = Dropout(self.c_dropout)(gru2)
                 output = GRU(1, activation=None)(dr2)
             model = Model(input, output)
             return model
 
     def plot_train_sample(self):
+        """
+        Generates light curve plots for training sample
+        """
         print('Generating plots for training sample...')
         if not os.path.exists(os.path.join(self.root, 'Training_sample')):
             os.mkdir(os.path.join(self.root, 'Training_sample'))
@@ -585,6 +634,12 @@ class WGAN:
             plt.close('all')
 
     def train(self, epochs=100, batch_size=1, plot_interval=None):
+        """
+        Trains generator and critic
+        :param epochs: int, number of epochs to run training for
+        :param batch_size: int, size of each batch (currently only works for size of 1)
+        :param plot_interval: int, number of epochs between showing examples plots
+        """
         print('Starting training...')
         if not os.path.exists(os.path.join(self.root, 'Train_plots')):
             os.mkdir(os.path.join(self.root, 'Train_plots'))
@@ -612,8 +667,14 @@ class WGAN:
                     sn = sne[batch]
                     sndf = self.train_df[self.train_df.sn == sn]
                     if self.mode == 'observed':
-                        X = sndf[['g_t', 'r_t', 'i_t', 'z_t', 'g', 'r', 'i', 'z', 'g_err',
-                                  'r_err', 'i_err', 'z_err']].values
+                        if self.ds == 1:
+                            X = sndf[['g_t', 'r_t', 'i_t', 'z_t', 'g', 'r', 'i', 'z', 'g_err',
+                                      'r_err', 'i_err', 'z_err']].values
+                        elif self.ds == 2:
+                            X = sndf[['g_t', 'g', 'g_err', 'r_t', 'r', 'r_err', 'i_t', 'i', 'i_err',
+                                      'z_t', 'z', 'z_err']].values
+                        else:
+                            raise ValueError('Invalid option for data structure')
                     elif self.mode == 'template':
                         X = sndf[['t', 'g', 'r', 'i', 'z']].values
 
@@ -675,9 +736,16 @@ class WGAN:
                 for f_ind, f in enumerate(['g', 'r', 'i', 'z']):
                     ax = fig.add_subplot(2, 2, f_ind + 1)
                     if self.mode == 'observed':
-                        x, y, y_err = plot_test[:, f_ind], plot_test[:, f_ind + 4], plot_test[:, f_ind + 8]
-                        ax.errorbar(x, y, yerr=y_err, label=f, fmt='x')
-                        ax.errorbar(X[:, f_ind], X[:, f_ind + 4], yerr=X[:, f_ind + 8], fmt='x')
+                        if self.ds == 1:
+                            x, y, y_err = plot_test[:, f_ind], plot_test[:, f_ind + 4], plot_test[:, f_ind + 8]
+                            ax.errorbar(x, y, yerr=y_err, label=f, fmt='x')
+                            ax.errorbar(X[:, f_ind], X[:, f_ind + 4], yerr=X[:, f_ind + 8], fmt='x')
+                        elif self.ds == 2:
+                            x, y, y_err = plot_test[:, f_ind * 3], plot_test[:, f_ind * 3 + 1], plot_test[:, f_ind*3+2]
+                            ax.errorbar(x, y, yerr=y_err, label=f, fmt='x')
+                            ax.errorbar(X[:, f_ind * 3], X[:, f_ind * 3 + 1], yerr=X[:, f_ind * 3 + 2], fmt='x')
+                        # ax.errorbar(x, y, yerr=y_err, label=f, fmt='x')
+                        # ax.errorbar(X[:, f_ind], X[:, f_ind + 4], yerr=X[:, f_ind + 8], fmt='x')
                     elif self.mode == 'template':
                         y = plot_test[:, f_ind + 1]
                         ax.scatter(x, y, label=f)
@@ -691,6 +759,11 @@ class WGAN:
                 plt.close('all')
 
     def colour_analysis(self, epoch=-1, n=1):
+        """
+        Compares colour distribution of training set to generated light curves
+        :param epoch: Epoch of model weights to use for light curve generation
+        :param n: Number of light curves to generate
+        """
         if epoch == -1:
             epoch = len(os.listdir(self.generator_dir))
         self.generator.load_weights(os.path.join(self.generator_dir, f'{epoch}.h5'))
