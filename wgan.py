@@ -5,6 +5,11 @@ import pandas as pd
 import scipy.optimize as spopt
 import pickle
 import numpy.random as rand
+import matplotlib as mpl
+from matplotlib import rc
+rc('font', **{'family': 'serif', 'serif': ['cmr10']})
+mpl.rcParams['axes.unicode_minus'] = False
+mpl.rcParams['mathtext.fontset'] = 'cm'
 import matplotlib.pyplot as plt
 from astropy.table import Table
 from astropy.cosmology import FlatLambdaCDM
@@ -22,6 +27,7 @@ import george
 from george.kernels import Matern32Kernel
 import time
 
+plt.rcParams.update({'font.size': 22})
 
 class WGAN:
     """
@@ -154,7 +160,10 @@ class WGAN:
             if 'HEAD' in file:
                 head_file = file
                 phot_file = file.replace('HEAD', 'PHOT')
+                # try:
                 head = Table.read(os.path.join(data_dir, head_file), hdu=1)
+                # except:
+                #     continue
                 head_df = head.to_pandas()
                 total += head_df.shape[0]
                 head_df = head_df[head_df.SNTYPE == 120]
@@ -201,6 +210,8 @@ class WGAN:
         # Get bounds for light curve scaling and rescale so between 0 and 1
         if self.mode == 'template':
             all_df = all_df[all_df.mag < -10.733477]  # 99th percentile
+        elif self.mode == 'observed':
+            all_df = all_df[all_df.mag < 27.428694]  # 99th percentile
         min_t, max_t = all_df.t.min(), all_df.t.max()
         min_mag, max_mag = all_df.mag.max(), all_df.mag.min()
         all_df = all_df[all_df.mag_err < 1]  # Remove points with magnitude uncertainties greater than 1 mag
@@ -208,12 +219,13 @@ class WGAN:
         scaled_mag /= (max_mag - min_mag) / 2
         all_df['mag'] = scaled_mag
         all_df['mag_err'] /= np.abs(max_mag - min_mag) / 2
-        all_df = all_df[~(all_df.mag < 0.1)]  # Remove bad points # & (all_df.mag_err > 0.5))]
+        # all_df = all_df[~(all_df.mag < 0.1)]  # Remove bad points # & (all_df.mag_err > 0.5))]
 
         all_new_df = None
         used_count, skip_count, gp_error, no_peak, no_points, nans = 0, 0, 0, 0, 0, 0
 
         sn_list = list(all_df.sn.unique())
+
 
         for i, sn in tqdm(enumerate(sn_list), total=len(sn_list)):
             sn_df = all_df[all_df.sn == sn]
@@ -682,3 +694,63 @@ class WGAN:
                 ax.legend()
                 ax.invert_yaxis()
             plt.show()
+
+    def plot_lightcurves(self, n=10, length=12, model=None, epochs=np.arange(1, 201)):
+        for epoch in tqdm(epochs):
+            if not os.path.exists(os.path.join(self.root, 'Generated_Plots')):
+                os.mkdir(os.path.join(self.root, 'Generated_Plots'))
+            noise = rand.normal(size=(n, self.latent_dims))
+            noise = np.reshape(noise, (n, 1, self.latent_dims))
+            noise = np.repeat(noise, length, 1)
+            self.generator.load_weights(os.path.join(self.generator_dir, f'{epoch}.h5'))
+            gen_lcs = self.generator.predict(noise)
+            gen_lcs[:, :, 0:4] = gen_lcs[:, :, 0:4] * (self.scaling_factors[1] - self.scaling_factors[0]) + \
+                                self.scaling_factors[0]
+            gen_lcs[:, :, 4:8] = gen_lcs[:, :, 4:8] * ((self.scaling_factors[3] - self.scaling_factors[2]) / 2) + np.mean(
+                [self.scaling_factors[3], self.scaling_factors[2]])
+            gen_lcs[:, :, 8:] = gen_lcs[:, :, 8:] * ((self.scaling_factors[3] - self.scaling_factors[2]) / 2)
+            sn = np.random.choice(self.train_df.sn.values)
+            sndf = self.train_df[self.train_df.sn == sn]
+            X = sndf[['g_t', 'r_t', 'i_t', 'z_t', 'g', 'r', 'i', 'z', 'g_err',
+                                      'r_err', 'i_err', 'z_err']].values
+            X = X.reshape((1, *X.shape))
+            X[:, :, 0:4] = X[:, :, 0:4] * (self.scaling_factors[1] - self.scaling_factors[0]) + \
+                                 self.scaling_factors[0]
+            X[:, :, 4:8] = X[:, :, 4:8] * (
+                        (self.scaling_factors[3] - self.scaling_factors[2]) / 2) + np.mean(
+                [self.scaling_factors[3], self.scaling_factors[2]])
+            X[:, :, 8:] = X[:, :, 8:] * ((self.scaling_factors[3] - self.scaling_factors[2]) / 2)
+            for i in np.arange(n):
+                # Plot generated data
+                data = gen_lcs[i, :, :]
+                g_band_max = gen_lcs[i, :, 0][np.argmin(gen_lcs[i, :, 4])]
+                g_band_max_real = X[0, :, 0][np.argmin(X[0, :, 4])]
+                fig = plt.figure(figsize=(12, 8))
+                ax_list = []
+                for f_ind, f in enumerate(['g', 'r', 'i', 'z']):
+                    ax = fig.add_subplot(2, 2, f_ind + 1)
+                    x = gen_lcs[i, :, f_ind] - g_band_max
+                    y = gen_lcs[i, :, f_ind + 4]
+                    y_err = gen_lcs[i, :, f_ind + 8]
+                    ax.errorbar(x, y, yerr=y_err, label=f'{f} (Generated)', fmt='x')
+                    x = X[0, :, f_ind] - g_band_max_real
+                    y = X[0, :, f_ind + 4]  # - 2
+                    y_err = X[0, :, f_ind + 8]
+                    ax.errorbar(x, y, yerr=y_err, label=f'{f} (Real)', fmt='x')
+                    ax.legend(fontsize=16) #, loc='upper right')
+                    # ax.annotate(f, (0.03, 0.9), xycoords='axes fraction')
+                    ax.invert_yaxis()
+                    ax.set_xlabel('Days since g-band maximum')
+                    if f_ind in [0, 2]:
+                        ax.set_ylabel('Apparent magnitude')
+                    ax_list.append(ax)
+                ax_list[0].get_shared_x_axes().join(*ax_list)
+                ax_list[0].get_shared_y_axes().join(*ax_list)
+                ax_list[1].set_yticklabels([])
+                ax_list[3].set_yticklabels([])
+                plt.subplots_adjust(hspace=0, wspace=0)
+                plt.savefig(os.path.join(self.root, 'Generated_Plots', f'{epoch}-{i + 1}.png'))
+                # plt.show()
+                plt.close('all')
+                # raise ValueError('Nope')
+                # break

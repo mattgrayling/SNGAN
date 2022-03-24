@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="WebServers">
+    <option name="servers">
+      <webServer id="a3726722-1dde-4c6c-b29f-e8b511243a85" name="grayling@srv03164.soton.ac.uk" url="http://srv03164">
+        <fileTransfer accessType="SFTP" host="srv03164.soton.ac.uk" port="22" sshConfigId="3e809cce-09ca-4c2d-bbbf-a41bba55a0dd" sshConfig="mjpg1g18@srv03164.soton.ac.uk:22 password">
+          <advancedOptions>
+            <advancedOptions dataProtectionLevel="Private" passiveMode="true" shareSSLContext="true" />
+          </advancedOptions>
+        </fileTransfer>
+      </webServer>
+    </option>
+  </component>
+</project>

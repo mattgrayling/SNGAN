@@ -2,10 +2,20 @@
 <project version="4">
   <component name="PublishConfigData" autoUpload="Always" serverName="mjpg1g18@srv03164.soton.ac.uk:22 password" remoteFilesAllowedToDisappearOnAutoupload="false">
     <serverData>
+      <paths name="grayling@srv03164.soton.ac.uk">
+        <serverdata>
+          <mappings>
+            <mapping deploy="/datahdd/mjpg1g18/GAN" local="$PROJECT_DIR$" web="/" />
+          </mappings>
+          <excludedPaths>
+            <excludedPath local="true" path="$PROJECT_DIR$/Data" />
+          </excludedPaths>
+        </serverdata>
+      </paths>
       <paths name="mjpg1g18@srv03164.soton.ac.uk:22 password">
         <serverdata>
           <mappings>
-            <mapping deploy="/home/mjpg1g18/Documents/GAN" local="$PROJECT_DIR$" web="/" />
+            <mapping deploy="/datahdd/mjpg1g18/GAN" local="$PROJECT_DIR$" />
           </mappings>
         </serverdata>
       </paths>
