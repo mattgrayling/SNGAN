@@ -7,9 +7,9 @@ import pickle
 import numpy.random as rand
 import matplotlib as mpl
 from matplotlib import rc
-rc('font', **{'family': 'serif', 'serif': ['cmr10']})
-mpl.rcParams['axes.unicode_minus'] = False
-mpl.rcParams['mathtext.fontset'] = 'cm'
+# rc('font', **{'family': 'serif', 'serif': ['cmr10']})
+# mpl.rcParams['axes.unicode_minus'] = False
+# mpl.rcParams['mathtext.fontset'] = 'cm'
 import matplotlib.pyplot as plt
 from astropy.table import Table
 from astropy.cosmology import FlatLambdaCDM
@@ -28,14 +28,17 @@ from george.kernels import Matern32Kernel
 import time
 
 plt.rcParams.update({'font.size': 22})
+pd.options.mode.chained_assignment = None
+
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 
 class WGAN:
     """
     Wasserstein GAN implementation for supernova light curve generation
     """
-    def __init__(self, latent_dims=100, clr=0.0005, glr=0.0005, device='gpu:0', GP=True,
+    def __init__(self, experiment='general', latent_dims=100, clr=0.0005, glr=0.0005, device='gpu:0', GP=True,
                  z_lim=None, batch_norm=False, mode='template', g_dropout=0.5, c_dropout=0.5,
-                 gen_units=100, crit_units=100, sn_type='II', ds=1):
+                 gen_units=100, crit_units=100, sn_type='II', ds=1, inc_colour=False, n_critic=1, clip=0.01):
         """
         :param latent_dims: int, number of latent dimensions to draw random seed for generator from
         :param clr: float, initial learning rate to use for critic
@@ -52,7 +55,9 @@ class WGAN:
         :param sn_type: string, SN class to look at
         :param ds: int, data structure for training. 1 for [band_time, band_mag, band_mag_err, etc.],
                 2 for [band_time, band_time, ..., band_mag, band_mag, ..., band_mag_err, band_mag_err, ...]
+        :param inc_colour: Boolean, whether to include colours in training process
         """
+        self.experiment = experiment
         self.latent_dims = latent_dims
         self.clr = clr
         self.glr = glr
@@ -63,6 +68,7 @@ class WGAN:
         self.batch_norm = batch_norm
         self.mode = mode
         self.ds = ds
+        self.inc_colour = inc_colour
         if self.mode.lower() not in ['template', 'observed']:
             raise ValueError('mode must be one of template and observed')
         self.g_dropout = g_dropout
@@ -70,8 +76,8 @@ class WGAN:
         self.gen_units = gen_units
         self.crit_units = crit_units
         # WGAN Paper guidance-----------------------------
-        self.n_critic = 1
-        self.clip_value = 0.01
+        self.n_critic = n_critic
+        self.clip_value = clip
         self.c_optimizer = opt.RMSprop(lr=self.clr)
         self.g_optimizer = opt.RMSprop(lr=self.glr)
         # ------------------------------------------------
@@ -99,11 +105,18 @@ class WGAN:
             self.n_output = 5
         self.name = f'WGAN_DES_sim_{sn_type}_CCSNe_{self.mode}_clr{self.clr}_glr{self.glr}_ld{self.latent_dims}' \
                         f'_GP{self.GP}_zlim{self.z_lim}_bn{self.batch_norm}_gN{self.gen_units}_cN{self.crit_units}' \
-                        f'_gd{self.g_dropout}_cd{self.c_dropout}_ds{self.ds}'
-        self.root = os.path.join('Data', 'Models', 'WGAN', self.mode, self.name)
+                        f'_gd{self.g_dropout}_cd{self.c_dropout}_ds{self.ds}_colour{self.inc_colour}' \
+                        f'_clip{self.clip_value}_ncrit{self.n_critic}'
+        if not os.path.exists(os.path.join('Data', 'Models', self.experiment)):
+            os.mkdir(os.path.join('Data', 'Models', self.experiment))
+        if not os.path.exists(os.path.join('Data', 'Models', self.experiment, 'WGAN')):
+            os.mkdir(os.path.join('Data', 'Models', self.experiment, 'WGAN'))
+        if not os.path.exists(os.path.join('Data', 'Models', self.experiment, 'WGAN', self.mode)):
+            os.mkdir(os.path.join('Data', 'Models', self.experiment, 'WGAN', self.mode))
+        self.root = os.path.join('Data', 'Models', self.experiment, 'WGAN', self.mode, self.name)
         if not os.path.exists(self.root):
             os.mkdir(self.root)
-        self.dataset_name = f'WGAN_DES_sim_{self.mode}_GP{self.GP}_zlim{self.z_lim}'
+        self.dataset_name = f'WGAN_DES_sim_{self.mode}_colour{self.inc_colour}_GP{self.GP}_zlim{self.z_lim}'
         self.dataset_path = os.path.join('Data', 'Datasets', f'{self.dataset_name}.csv')
         if os.path.exists(self.dataset_path):
             self.train_df = pd.read_csv(self.dataset_path)
@@ -222,10 +235,9 @@ class WGAN:
         # all_df = all_df[~(all_df.mag < 0.1)]  # Remove bad points # & (all_df.mag_err > 0.5))]
 
         all_new_df = None
-        used_count, skip_count, gp_error, no_peak, no_points, nans = 0, 0, 0, 0, 0, 0
+        used_count, skip_count, gp_error, no_peak, no_points, nans, less_than_zero = 0, 0, 0, 0, 0, 0, 0
 
         sn_list = list(all_df.sn.unique())
-
 
         for i, sn in tqdm(enumerate(sn_list), total=len(sn_list)):
             sn_df = all_df[all_df.sn == sn]
@@ -271,10 +283,18 @@ class WGAN:
                         drop_count = fdf.shape[0] - use_len
                         skip_num = int(np.floor(drop_count / 2))
                         fdf = fdf.iloc[skip_num: skip_num + use_len, :]
-                    t = (fdf.t - min_t) / (max_t - min_t)
-                    new_sn_df[f'{f}_t'] = t.values
+                    if self.inc_colour:
+                        min_filt = ['g', 'r', 'i', 'z'][np.argmin(lens)]
+                        t = (fdf.t - min_t) / (max_t - min_t)
+                        fit_t = (sn_df[sn_df.FLT == min_filt]['t'] - min_t) / (max_t - min_t)
+                        new_sn_df['t'] = t.values
+                    else:
+                        t = (fdf.t - min_t) / (max_t - min_t)
+                        fit_t = (fdf.t - min_t) / (max_t - min_t)
+                        new_sn_df[f'{f}_t'] = t.values
                 else:
                     t = (fdf.t - min_t) / (max_t - min_t)
+                    fit_t = all_t
                 sn_t_min, sn_t_max = np.min(t), np.max(t)
                 y = fdf.mag
                 y_err = fdf.mag_err
@@ -294,7 +314,7 @@ class WGAN:
                     p0 = gp.kernel.get_parameter_vector()[0]
                     results = spopt.minimize(ll, p0, jac=grad_ll)
                     if self.mode == 'template':
-                        mu, cov = gp.predict(y, all_t)
+                        mu, cov = gp.predict(y, fit_t)
                     elif self.mode == 'observed':
                         mu, cov = gp.predict(y, t)
                     std = np.sqrt(np.diag(cov))
@@ -332,6 +352,12 @@ class WGAN:
 
             new_sn_df['sn'] = sn
             new_sn_df['sn_type'] = sn_df.sn_type.values[0]
+            if 'g' in new_sn_df.columns and 'r' in new_sn_df.columns and 'i' in new_sn_df.columns and 'z' \
+                    in new_sn_df.columns:
+                new_sn_df = new_sn_df.loc[np.min(new_sn_df[['g', 'r', 'i', 'z']].values, axis=1) >= 0, :]
+                if new_sn_df.shape[0] < 8:
+                    less_than_zero += 1
+                    skip = True
             if skip:
                 skip_count += 1
                 continue
@@ -340,8 +366,7 @@ class WGAN:
                 all_new_df = new_sn_df.copy()
             else:
                 all_new_df = pd.concat([all_new_df, new_sn_df])
-        # print(total, sn_type, z_cut, n_obs)
-        # print(used_count, skip_count, gp_error + no_peak + no_points + nans, gp_error, no_peak, no_points, nans)
+        print(used_count, skip_count, gp_error, less_than_zero)
         all_new_df.to_csv(self.dataset_path)
         scaling_factors = [min_t, max_t, min_mag, max_mag]
         pickle.dump(scaling_factors,
@@ -364,12 +389,24 @@ class WGAN:
         """
         with tf.device(self.device):
             input = Input(shape=(None, self.latent_dims))
-            gru1 = GRU(self.gen_units, activation='relu', return_sequences=True)(input)
-            dr1 = Dropout(self.g_dropout)(gru1)
-            gru2 = GRU(self.gen_units, activation='relu', return_sequences=True)(dr1)
-            dr2 = Dropout(self.g_dropout)(gru2)
-            output = GRU(self.n_output, return_sequences=True, activation='sigmoid')(dr2)
-            model = Model(input, output)
+            if self.inc_colour:
+                gru1 = GRU(self.gen_units, activation='relu', return_sequences=True)(input)
+                dr1 = Dropout(self.g_dropout)(gru1)
+                gru2 = GRU(int(self.gen_units / 2), activation='relu', return_sequences=True)(dr1)
+                dr2 = Dropout(self.g_dropout)(gru2)
+                gru3 = GRU(int(self.gen_units / 4), activation='relu', return_sequences=True)(dr2)
+                dr3 = Dropout(self.g_dropout)(gru3)
+                output = GRU(self.n_output, return_sequences=True, activation='tanh')(dr3)
+                model = Model(input, output)
+            else:
+                gru1 = GRU(self.gen_units, activation='relu', return_sequences=True)(input)
+                dr1 = Dropout(self.g_dropout)(gru1)
+                gru2 = GRU(self.gen_units, activation='relu', return_sequences=True)(dr1)
+                dr2 = Dropout(self.g_dropout)(gru2)
+                gru3 = GRU(int(self.gen_units / 4), activation='relu', return_sequences=True)(dr2)
+                dr3 = Dropout(self.g_dropout)(gru3)
+                output = GRU(self.n_output, return_sequences=True, activation='sigmoid')(dr2)
+                model = Model(input, output)
             return model
 
     def build_critic(self):
@@ -387,9 +424,12 @@ class WGAN:
                 bn2 = BatchNormalization()(gru2)
                 output = GRU(1, activation=None)(bn2)
             else:
-                gru2 = GRU(self.crit_units, return_sequences=True)(dr1)
+                # gru2 = GRU(self.crit_units, return_sequences=True)(dr1)
+                # dr2 = Dropout(self.c_dropout)(gru2)
+                # output = GRU(1, activation=None)(dr2)
+                gru2 = GRU(self.crit_units)(dr1)
                 dr2 = Dropout(self.c_dropout)(gru2)
-                output = GRU(1, activation=None)(dr2)
+                output = Dense(1, activation=None)(dr2)
             model = Model(input, output)
             return model
 
@@ -446,7 +486,7 @@ class WGAN:
                     # Select real data
                     sn = sne[batch]
                     sndf = self.train_df[self.train_df.sn == sn]
-                    if self.mode == 'observed':
+                    if self.mode == 'observed' and not self.inc_colour:
                         if self.ds == 1:
                             X = sndf[['g_t', 'r_t', 'i_t', 'z_t', 'g', 'r', 'i', 'z', 'g_err',
                                       'r_err', 'i_err', 'z_err']].values
@@ -455,6 +495,14 @@ class WGAN:
                                       'z_t', 'z', 'z_err']].values
                         else:
                             raise ValueError('Invalid option for data structure')
+                    elif self.mode == 'observed' and self.inc_colour:
+                        sndf[['g', 'r', 'i', 'z']] = 2 * (sndf[['g', 'r', 'i', 'z']] - 0.5)
+                        sndf[['g_err', 'r_err', 'i_err', 'z_err']] = 2 * sndf[['g_err', 'r_err', 'i_err', 'z_err']]
+                        sndf['g-r'] = sndf.g.values - sndf.r.values
+                        sndf['r-i'] = sndf.r.values - sndf.i.values
+                        sndf['i-z'] = sndf.i.values - sndf.z.values
+                        X = sndf[['t', 'g', 'g-r', 'r', 'r-i', 'i', 'i-z', 'z', 'g_err',
+                                  'r_err', 'i_err', 'z_err']].values
                     elif self.mode == 'template':
                         X = sndf[['t', 'g', 'r', 'i', 'z']].values
 
@@ -464,7 +512,8 @@ class WGAN:
                     if np.count_nonzero(np.isnan(X)) > 0:
                         continue
 
-                    noise = rand.normal(size=(batch_size, self.latent_dims))
+                    noise = rand.uniform(-1, 1, size=(batch_size, self.latent_dims))
+                    # noise = rand.normal(size=(batch_size, self.latent_dims))
                     noise = np.reshape(noise, (batch_size, 1, self.latent_dims))
                     noise = np.repeat(noise, X.shape[1], 1)
 
@@ -482,10 +531,15 @@ class WGAN:
                     d_loss_fake = self.critic.train_on_batch(gen_lcs, fake)
                     d_loss = 0.5 * np.add(d_loss_real, d_loss_fake)
 
-                    # for l in self.critic.layers:
-                    #    weights = l.get_weights()
-                    #    weights = [np.clip(w, -self.clip_value, self.clip_value) for w in weights]
-                    #    l.set_weights(weights)
+                    for l in self.critic.layers:
+                        weights = l.get_weights()
+                        weights = [np.clip(w, -self.clip_value, self.clip_value) for w in weights]
+                        l.set_weights(weights)
+
+                    for l in self.generator.layers:
+                        weights = l.get_weights()
+                        weights = [np.clip(w, -self.clip_value, self.clip_value) for w in weights]
+                        l.set_weights(weights)
 
                     if batch % self.n_critic == 0:
                         # Train generator
@@ -515,7 +569,7 @@ class WGAN:
                 X = X.reshape((*X.shape[1:],))
                 for f_ind, f in enumerate(['g', 'r', 'i', 'z']):
                     ax = fig.add_subplot(2, 2, f_ind + 1)
-                    if self.mode == 'observed':
+                    if self.mode == 'observed' and not self.inc_colour:
                         if self.ds == 1:
                             x, y, y_err = plot_test[:, f_ind], plot_test[:, f_ind + 4], plot_test[:, f_ind + 8]
                             ax.errorbar(x, y, yerr=y_err, label=f, fmt='x')
@@ -526,6 +580,10 @@ class WGAN:
                             ax.errorbar(X[:, f_ind * 3], X[:, f_ind * 3 + 1], yerr=X[:, f_ind * 3 + 2], fmt='x')
                         # ax.errorbar(x, y, yerr=y_err, label=f, fmt='x')
                         # ax.errorbar(X[:, f_ind], X[:, f_ind + 4], yerr=X[:, f_ind + 8], fmt='x')
+                    elif self.mode == 'observed' and self.inc_colour:
+                        x, y, y_err = plot_test[:, 0], plot_test[:, 1 + f_ind * 2], plot_test[:, f_ind + 8]
+                        ax.errorbar(x, y, yerr=y_err, label=f, fmt='x')
+                        ax.errorbar(X[:, 0], X[:, 1 + f_ind * 2], yerr=X[:, f_ind + 8], fmt='x')
                     elif self.mode == 'template':
                         y = plot_test[:, f_ind + 1]
                         ax.scatter(x, y, label=f)
