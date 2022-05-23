@@ -1,5 +1,4 @@
 import os
-
 import numpy as np
 import pandas as pd
 import scipy.optimize as spopt
@@ -27,10 +26,133 @@ import george
 from george.kernels import Matern32Kernel
 import time
 
+# tf.config.run_functions_eagerly(True)
+
 plt.rcParams.update({'font.size': 22})
 pd.options.mode.chained_assignment = None
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+os.environ["CUDA_VISIBLE_DEVICES"] = "1"
+
+class WGANModel(keras.Model):
+    def __init__(
+        self,
+        discriminator,
+        generator,
+        latent_dims,
+        discriminator_extra_steps=1,
+        gp_weight=1.0,
+    ):
+        super(WGANModel, self).__init__()
+        self.discriminator = discriminator
+        self.generator = generator
+        self.latent_dims = latent_dims
+        self.d_steps = discriminator_extra_steps
+        self.gp_weight = gp_weight
+
+    @tf.function(input_signature=[tf.TensorSpec([None, None, 10], tf.float32)])
+    def call(self, inputs):
+        x = self.generator(inputs)
+        return x
+
+    def compile(self, d_optimizer, g_optimizer, d_loss_fn, g_loss_fn):
+        super(WGANModel, self).compile()
+        self.d_optimizer = d_optimizer
+        self.g_optimizer = g_optimizer
+        self.d_loss_fn = d_loss_fn
+        self.g_loss_fn = g_loss_fn
+
+    def gradient_penalty(self, batch_size, real_data, fake_data):
+        """ Calculates the gradient penalty.
+
+        This loss is calculated on an interpolated image
+        and added to the discriminator loss.
+        """
+        # Get the interpolated image
+        alpha = tf.random.normal([batch_size, 1], 0.0, 1.0)
+        diff = fake_data - real_data
+        interpolated = real_data + alpha * diff
+
+        with tf.GradientTape() as gp_tape:
+            gp_tape.watch(interpolated)
+            # 1. Get the discriminator output for this interpolated image.
+            pred = self.discriminator(interpolated, training=True)
+
+        # 2. Calculate the gradients w.r.t to this interpolated image.
+        grads = gp_tape.gradient(pred, [interpolated])[0]
+        # 3. Calculate the norm of the gradients.
+        norm = tf.sqrt(tf.reduce_sum(1e-16 + tf.square(grads), axis=[1, 2]))
+        # print(norm.numpy())
+        gp = tf.reduce_mean((norm - 1.0) ** 2)
+        return gp
+
+    def train_step(self, X):
+        # Get the batch size
+        if isinstance(X, tuple):
+            X = X[0]
+        batch_size = tf.shape(X)[0]
+        timesteps = tf.shape(X)[1]
+
+        # For each batch, we are going to perform the
+        # following steps as laid out in the original paper:
+        # 1. Train the generator and get the generator loss
+        # 2. Train the discriminator and get the discriminator loss
+        # 3. Calculate the gradient penalty
+        # 4. Multiply this gradient penalty with a constant weight factor
+        # 5. Add the gradient penalty to the discriminator loss
+        # 6. Return the generator and discriminator losses as a loss dictionary
+
+        # Train the discriminator first. The original paper recommends training
+        # the discriminator for `x` more steps (typically 5) as compared to
+        # one step of the generator. Here we will train it for 3 extra steps
+        # as compared to 5 to reduce the training time.
+        for i in range(self.d_steps):
+            # Get the latent vector
+            noise = tf.random.normal((batch_size, self.latent_dims))
+            noise = tf.reshape(noise, (batch_size, 1, self.latent_dims))
+            noise = tf.repeat(noise, timesteps, 1)
+            self.__call__(noise)
+            with tf.GradientTape() as tape:
+                # Generate fake images from the latent vector
+                fake_images = self.generator(noise, training=True)
+                # Get the logits for the fake images
+                fake_logits = self.discriminator(fake_images, training=True)
+                # Get the logits for the real images
+                real_logits = self.discriminator(X, training=True)
+
+                # Calculate the discriminator loss using the fake and real image logits
+                d_cost = self.d_loss_fn(real_img=real_logits, fake_img=fake_logits)
+                # Calculate the gradient penalty
+                gp = self.gradient_penalty(batch_size, X, fake_images)
+                # Add the gradient penalty to the original discriminator loss
+                d_loss = d_cost + gp * self.gp_weight
+
+            # Get the gradients w.r.t the discriminator loss
+            d_gradient = tape.gradient(d_loss, self.discriminator.trainable_variables)
+            # Update the weights of the discriminator using the discriminator optimizer
+            self.d_optimizer.apply_gradients(
+                zip(d_gradient, self.discriminator.trainable_variables)
+            )
+        # Train the generator
+        # Get the latent vector
+        noise = tf.random.normal((batch_size, self.latent_dims))
+        noise = tf.reshape(noise, (batch_size, 1, self.latent_dims))
+        noise = tf.repeat(noise, timesteps, 1)
+        with tf.GradientTape() as tape:
+            # Generate fake images using the generator
+            generated_data = self.generator(noise, training=True)
+            # Get the discriminator logits for fake images
+            gen_img_logits = self.discriminator(generated_data, training=True)
+            # Calculate the generator loss
+            g_loss = self.g_loss_fn(gen_img_logits)
+
+        # Get the gradients w.r.t the generator loss
+        gen_gradient = tape.gradient(g_loss, self.generator.trainable_variables)
+        # Update the weights of the generator using the generator optimizer
+        self.g_optimizer.apply_gradients(
+            zip(gen_gradient, self.generator.trainable_variables)
+        )
+        return {"d_loss": d_loss, "g_loss": g_loss}
+
 
 class WGAN:
     """
@@ -38,7 +160,7 @@ class WGAN:
     """
     def __init__(self, experiment='general', latent_dims=100, clr=0.0005, glr=0.0005, device='gpu:0', GP=True,
                  z_lim=None, batch_norm=False, mode='template', g_dropout=0.5, c_dropout=0.5,
-                 gen_units=100, crit_units=100, sn_type='II', ds=1, inc_colour=False, n_critic=1, clip=0.01):
+                 gen_units=100, crit_units=100, sn_type='II', ds=1, inc_colour=False, n_critic=1):
         """
         :param latent_dims: int, number of latent dimensions to draw random seed for generator from
         :param clr: float, initial learning rate to use for critic
@@ -77,9 +199,8 @@ class WGAN:
         self.crit_units = crit_units
         # WGAN Paper guidance-----------------------------
         self.n_critic = n_critic
-        self.clip_value = clip
-        self.c_optimizer = opt.RMSprop(lr=self.clr)
-        self.g_optimizer = opt.RMSprop(lr=self.glr)
+        self.c_optimizer = opt.Adam(lr=self.clr, beta_1=0.5, beta_2=0.9)
+        self.g_optimizer = opt.Adam(lr=self.glr, beta_1=0.5, beta_2=0.9)
         # ------------------------------------------------
         # --
         type_dict = {}
@@ -106,7 +227,7 @@ class WGAN:
         self.name = f'WGAN_DES_sim_{sn_type}_CCSNe_{self.mode}_clr{self.clr}_glr{self.glr}_ld{self.latent_dims}' \
                         f'_GP{self.GP}_zlim{self.z_lim}_bn{self.batch_norm}_gN{self.gen_units}_cN{self.crit_units}' \
                         f'_gd{self.g_dropout}_cd{self.c_dropout}_ds{self.ds}_colour{self.inc_colour}' \
-                        f'_clip{self.clip_value}_ncrit{self.n_critic}'
+                        f'_ncrit{self.n_critic}'
         if not os.path.exists(os.path.join('Data', 'Models', self.experiment)):
             os.mkdir(os.path.join('Data', 'Models', self.experiment))
         if not os.path.exists(os.path.join('Data', 'Models', self.experiment, 'WGAN')):
@@ -126,9 +247,10 @@ class WGAN:
             print('Dataset does not already exist, creating now...')
             self.train_df, self.scaling_factors = self.__prepare_dataset__()
         self.train_df = self.train_df[self.train_df.sn_type == self.class_label_encoder[sn_type]]
-        self.generator_dir = os.path.join(self.root, 'model_weights')
+        self.wgan_dir = os.path.join(self.root, 'model_weights')
 
         with tf.device(self.device):
+            '''
             # Optimizer
 
             # Build discriminator
@@ -151,7 +273,10 @@ class WGAN:
 
             self.combined = Model(i, valid)
             self.combined.compile(loss=self.wasserstein_loss, optimizer=self.g_optimizer)
-            print(self.combined.summary())
+            print(self.combined.summary())'''
+            self.wgan = WGANModel(self.build_critic(), self.build_generator(), self.latent_dims)
+            self.wgan.compile(d_optimizer=self.c_optimizer, g_optimizer=self.g_optimizer,
+                              g_loss_fn=self.generator_loss, d_loss_fn=self.discriminator_loss)
 
     def __prepare_dataset__(self):
         """
@@ -453,6 +578,16 @@ class WGAN:
             plt.savefig(os.path.join(self.root, 'Training_sample', f'{sn}.jpg'))
             plt.close('all')
 
+    @staticmethod
+    def discriminator_loss(real_img, fake_img):
+        real_loss = tf.reduce_mean(real_img)
+        fake_loss = tf.reduce_mean(fake_img)
+        return fake_loss - real_loss
+
+    @staticmethod
+    def generator_loss(fake_img):
+        return -tf.reduce_mean(fake_img)
+
     def train(self, epochs=100, batch_size=1, plot_interval=None):
         """
         Trains generator and critic
@@ -469,20 +604,25 @@ class WGAN:
             sne = self.train_df.sn.unique()
             n_batches = int(len(sne) / batch_size)
 
-            if os.path.exists(self.generator_dir):
+            if os.path.exists(self.wgan_dir):
+                # current_epoch = np.max([int(val.split('.')[0]) for val in os.listdir(self.wgan_dir)])
+                # print(f'Model already exists, resuming training from epoch {current_epoch}...')
+                # self.wgan = keras.models.load_model(os.path.join(self.wgan_dir, f'{current_epoch}.tf'))
                 raise ValueError('A weights path already exists for this model, please delete '
                                  'or rename it')
-            os.mkdir(self.generator_dir)
+            else:
+                current_epoch = 0
+                os.mkdir(self.wgan_dir)
 
             real = -np.ones((batch_size, 1))
             fake = np.ones((batch_size, 1))
+            self.train_df.to_csv('input_data.csv')
 
-            for epoch in range(epochs):
+            for epoch in range(current_epoch, epochs):
                 rng.shuffle(sne)
                 g_losses, d_losses, real_predictions, fake_predictions = [], [], [], []
                 t = trange(n_batches)
                 for batch in t:
-
                     # Select real data
                     sn = sne[batch]
                     sndf = self.train_df[self.train_df.sn == sn]
@@ -508,6 +648,7 @@ class WGAN:
 
                     sn_type = X[0, -1]
                     X = X.reshape((1, *X.shape))
+                    d_loss, g_loss = self.wgan.train_on_batch(X)
 
                     if np.count_nonzero(np.isnan(X)) > 0:
                         continue
@@ -517,53 +658,25 @@ class WGAN:
                     noise = np.reshape(noise, (batch_size, 1, self.latent_dims))
                     noise = np.repeat(noise, X.shape[1], 1)
 
-                    test_gen_lcs = self.generator.predict(noise)
+                    test_gen_lcs = self.wgan.generator.predict(noise)
                     if np.count_nonzero(np.isnan(test_gen_lcs)) > 0:
                         raise ValueError('NaN generated, check how this happened')
-                    gen_lcs = test_gen_lcs
-                    real_prediction = self.critic.predict(X)
-                    real_predictions.append(real_prediction.flatten()[0])
-                    fake_prediction = self.critic.predict(gen_lcs)
-                    fake_predictions.append(fake_prediction.flatten()[0])
 
-                    # Train discriminator
-                    d_loss_real = self.critic.train_on_batch(X, real)
-                    d_loss_fake = self.critic.train_on_batch(gen_lcs, fake)
-                    d_loss = 0.5 * np.add(d_loss_real, d_loss_fake)
-
-                    for l in self.critic.layers:
-                        weights = l.get_weights()
-                        weights = [np.clip(w, -self.clip_value, self.clip_value) for w in weights]
-                        l.set_weights(weights)
-
-                    for l in self.generator.layers:
-                        weights = l.get_weights()
-                        weights = [np.clip(w, -self.clip_value, self.clip_value) for w in weights]
-                        l.set_weights(weights)
-
-                    if batch % self.n_critic == 0:
-                        # Train generator
-                        noise = rand.normal(size=(2 * batch_size, self.latent_dims))
-                        noise = np.reshape(noise, (2 * batch_size, 1, self.latent_dims))
-                        noise = np.repeat(noise, X.shape[1], 1)
-
-                        gen_labels = -np.ones((2 * batch_size, 1))
-                        g_loss = self.combined.train_on_batch(noise, gen_labels)
-                        g_losses.append(g_loss)
                     d_losses.append(d_loss)
+                    g_losses.append(g_loss)
                     t.set_description(f'g_loss={np.around(np.mean(g_losses), 5)},'
                                       f' d_loss={np.around(np.mean(d_losses), 5)}')
                     t.refresh()
-                self.generator.save_weights(os.path.join(self.generator_dir, f'{epoch + 1}.h5'))
+                self.wgan.save(os.path.join(self.wgan_dir, f'{epoch + 1}.tf'))
                 full_g_loss = np.mean(g_losses)
                 full_d_loss = np.mean(d_losses)
-                print(f'{epoch + 1}/{epochs} g_loss={full_g_loss}, d_loss={full_d_loss}, '
-                      f'Real prediction: {np.mean(real_predictions)} +- {np.std(real_predictions)}, '
-                      f'Fake prediction: {np.mean(fake_predictions)} +- {np.std(fake_predictions)}')
+                print(f'{epoch + 1}/{epochs} g_loss={full_g_loss}, d_loss={full_d_loss}')#, '
+                      # f'Real prediction: {np.mean(real_predictions)} +- {np.std(real_predictions)}, '
+                      # f'Fake prediction: {np.mean(fake_predictions)} +- {np.std(fake_predictions)}')
                       # f' Ranges: x [{np.min(gen_lcs[:, :, 0])}, {np.max(gen_lcs[:, :, 0])}], '
                       # f'y [{np.min(gen_lcs[:, :, 1])}, {np.max(gen_lcs[:, :, 1])}]')
 
-                plot_test = gen_lcs[0, :, :]
+                plot_test = test_gen_lcs[0, :, :]
                 fig = plt.figure(figsize=(12, 8))
                 x = plot_test[:, 0]
                 X = X.reshape((*X.shape[1:],))
@@ -760,8 +873,9 @@ class WGAN:
             noise = rand.normal(size=(n, self.latent_dims))
             noise = np.reshape(noise, (n, 1, self.latent_dims))
             noise = np.repeat(noise, length, 1)
-            self.generator.load_weights(os.path.join(self.generator_dir, f'{epoch}.h5'))
-            gen_lcs = self.generator.predict(noise)
+            # self.wgan(np.zeros((1, 15, 12)))
+            self.wgan = keras.models.load_model(os.path.join(self.wgan_dir, f'{epoch}.tf'))
+            gen_lcs = self.wgan.generator.predict(noise)
             gen_lcs[:, :, 0:4] = gen_lcs[:, :, 0:4] * (self.scaling_factors[1] - self.scaling_factors[0]) + \
                                 self.scaling_factors[0]
             gen_lcs[:, :, 4:8] = gen_lcs[:, :, 4:8] * ((self.scaling_factors[3] - self.scaling_factors[2]) / 2) + np.mean(
