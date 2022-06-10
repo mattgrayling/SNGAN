@@ -17,6 +17,9 @@
           <mappings>
             <mapping deploy="/datahdd/mjpg1g18/GAN" local="$PROJECT_DIR$" />
           </mappings>
+          <excludedPaths>
+            <excludedPath path="*.tf" />
+          </excludedPaths>
         </serverdata>
       </paths>
     </serverData>

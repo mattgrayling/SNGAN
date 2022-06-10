@@ -2,13 +2,15 @@ import os
 import numpy as np
 import pandas as pd
 import scipy.optimize as spopt
+import scipy.stats as stats
 import pickle
 import numpy.random as rand
 import matplotlib as mpl
 from matplotlib import rc
-# rc('font', **{'family': 'serif', 'serif': ['cmr10']})
-# mpl.rcParams['axes.unicode_minus'] = False
-# mpl.rcParams['mathtext.fontset'] = 'cm'
+
+rc('font', **{'family': 'serif', 'serif': ['cmr10']})
+mpl.rcParams['axes.unicode_minus'] = False
+mpl.rcParams['mathtext.fontset'] = 'cm'
 import matplotlib.pyplot as plt
 from astropy.table import Table
 from astropy.cosmology import FlatLambdaCDM
@@ -28,19 +30,20 @@ import time
 
 # tf.config.run_functions_eagerly(True)
 
-plt.rcParams.update({'font.size': 22})
+plt.rcParams.update({'font.size': 26})
 pd.options.mode.chained_assignment = None
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "1"
+os.environ["CUDA_VISIBLE_DEVICES"] = "2"
+
 
 class WGANModel(keras.Model):
     def __init__(
-        self,
-        discriminator,
-        generator,
-        latent_dims,
-        discriminator_extra_steps=1,
-        gp_weight=1.0,
+            self,
+            discriminator,
+            generator,
+            latent_dims,
+            discriminator_extra_steps=1,
+            gp_weight=1.0,
     ):
         super(WGANModel, self).__init__()
         self.discriminator = discriminator
@@ -80,8 +83,7 @@ class WGANModel(keras.Model):
         # 2. Calculate the gradients w.r.t to this interpolated image.
         grads = gp_tape.gradient(pred, [interpolated])[0]
         # 3. Calculate the norm of the gradients.
-        norm = tf.sqrt(tf.reduce_sum(1e-16 + tf.square(grads), axis=[1, 2]))
-        # print(norm.numpy())
+        norm = tf.sqrt(tf.reduce_sum(1e-12 + tf.square(grads), axis=[1, 2]))
         gp = tf.reduce_mean((norm - 1.0) ** 2)
         return gp
 
@@ -158,9 +160,11 @@ class WGAN:
     """
     Wasserstein GAN implementation for supernova light curve generation
     """
+
     def __init__(self, experiment='general', latent_dims=100, clr=0.0005, glr=0.0005, device='gpu:0', GP=True,
                  z_lim=None, batch_norm=False, mode='template', g_dropout=0.5, c_dropout=0.5,
-                 gen_units=100, crit_units=100, sn_type='II', ds=1, inc_colour=False, n_critic=1):
+                 gen_units=100, crit_units=100, sn_type='II', ds=1, inc_colour=False, n_critic=1,
+                 gp_weight=1.0):
         """
         :param latent_dims: int, number of latent dimensions to draw random seed for generator from
         :param clr: float, initial learning rate to use for critic
@@ -201,6 +205,7 @@ class WGAN:
         self.n_critic = n_critic
         self.c_optimizer = opt.Adam(lr=self.clr, beta_1=0.5, beta_2=0.9)
         self.g_optimizer = opt.Adam(lr=self.glr, beta_1=0.5, beta_2=0.9)
+        self.gp_weight = gp_weight
         # ------------------------------------------------
         # --
         type_dict = {}
@@ -224,19 +229,34 @@ class WGAN:
             self.n_output = 12
         else:
             self.n_output = 5
-        self.name = f'WGAN_DES_sim_{sn_type}_CCSNe_{self.mode}_clr{self.clr}_glr{self.glr}_ld{self.latent_dims}' \
+        if self.gp_weight > 1:
+            self.name = f'WGAN_DES_sim_{sn_type}_CCSNe_{self.mode}_clr{self.clr}_glr{self.glr}_ld{self.latent_dims}' \
+                    f'_GP{self.GP}_zlim{self.z_lim}_bn{self.batch_norm}_gN{self.gen_units}_cN{self.crit_units}' \
+                    f'_gd{self.g_dropout}_cd{self.c_dropout}_ds{self.ds}_colour{self.inc_colour}' \
+                    f'_ncrit{self.n_critic}_gpw{self.gp_weight}'
+        else:
+            self.name = f'WGAN_DES_sim_{sn_type}_CCSNe_{self.mode}_clr{self.clr}_glr{self.glr}_ld{self.latent_dims}' \
                         f'_GP{self.GP}_zlim{self.z_lim}_bn{self.batch_norm}_gN{self.gen_units}_cN{self.crit_units}' \
                         f'_gd{self.g_dropout}_cd{self.c_dropout}_ds{self.ds}_colour{self.inc_colour}' \
                         f'_ncrit{self.n_critic}'
-        if not os.path.exists(os.path.join('Data', 'Models', self.experiment)):
-            os.mkdir(os.path.join('Data', 'Models', self.experiment))
-        if not os.path.exists(os.path.join('Data', 'Models', self.experiment, 'WGAN')):
-            os.mkdir(os.path.join('Data', 'Models', self.experiment, 'WGAN'))
-        if not os.path.exists(os.path.join('Data', 'Models', self.experiment, 'WGAN', self.mode)):
-            os.mkdir(os.path.join('Data', 'Models', self.experiment, 'WGAN', self.mode))
-        self.root = os.path.join('Data', 'Models', self.experiment, 'WGAN', self.mode, self.name)
-        if not os.path.exists(self.root):
-            os.mkdir(self.root)
+        if not os.path.exists(os.path.join('Data', 'Models', 'Weights', self.experiment)):
+            os.mkdir(os.path.join('Data', 'Models', 'Weights', self.experiment))
+        if not os.path.exists(os.path.join('Data', 'Models', 'Plots', self.experiment)):
+            os.mkdir(os.path.join('Data', 'Models', 'Plots', self.experiment))
+        if not os.path.exists(os.path.join('Data', 'Models', 'Weights', self.experiment, 'WGAN')):
+            os.mkdir(os.path.join('Data', 'Models', 'Weights', self.experiment, 'WGAN'))
+        if not os.path.exists(os.path.join('Data', 'Models', 'Plots', self.experiment, 'WGAN')):
+            os.mkdir(os.path.join('Data', 'Models', 'Plots', self.experiment, 'WGAN'))
+        if not os.path.exists(os.path.join('Data', 'Models', 'Weights', self.experiment, 'WGAN', self.mode)):
+            os.mkdir(os.path.join('Data', 'Models', 'Weights', self.experiment, 'WGAN', self.mode))
+        if not os.path.exists(os.path.join('Data', 'Models', 'Plots', self.experiment, 'WGAN', self.mode)):
+            os.mkdir(os.path.join('Data', 'Models', 'Plots', self.experiment, 'WGAN', self.mode))
+        self.weight_root = os.path.join('Data', 'Models', 'Weights', self.experiment, 'WGAN', self.mode, self.name)
+        self.plot_root = os.path.join('Data', 'Models', 'Plots', self.experiment, 'WGAN', self.mode, self.name)
+        if not os.path.exists(self.weight_root):
+            os.mkdir(self.weight_root)
+        if not os.path.exists(self.plot_root):
+            os.mkdir(self.plot_root)
         self.dataset_name = f'WGAN_DES_sim_{self.mode}_colour{self.inc_colour}_GP{self.GP}_zlim{self.z_lim}'
         self.dataset_path = os.path.join('Data', 'Datasets', f'{self.dataset_name}.csv')
         if os.path.exists(self.dataset_path):
@@ -247,7 +267,8 @@ class WGAN:
             print('Dataset does not already exist, creating now...')
             self.train_df, self.scaling_factors = self.__prepare_dataset__()
         self.train_df = self.train_df[self.train_df.sn_type == self.class_label_encoder[sn_type]]
-        self.wgan_dir = os.path.join(self.root, 'model_weights')
+        print(len(self.train_df.sn.unique()))
+        self.wgan_dir = os.path.join(self.weight_root, 'model_weights')
 
         with tf.device(self.device):
             '''
@@ -274,7 +295,8 @@ class WGAN:
             self.combined = Model(i, valid)
             self.combined.compile(loss=self.wasserstein_loss, optimizer=self.g_optimizer)
             print(self.combined.summary())'''
-            self.wgan = WGANModel(self.build_critic(), self.build_generator(), self.latent_dims)
+            self.wgan = WGANModel(self.build_critic(), self.build_generator(), self.latent_dims,
+                                  gp_weight=self.gp_weight, discriminator_extra_steps=self.n_critic)
             self.wgan.compile(d_optimizer=self.c_optimizer, g_optimizer=self.g_optimizer,
                               g_loss_fn=self.generator_loss, d_loss_fn=self.discriminator_loss)
 
@@ -295,6 +317,8 @@ class WGAN:
 
         print('Reading in files...')
         for file in tqdm(x):
+            # if all_df is not None and all_df.shape[0] > 100:
+            #    break
             if 'HEAD' in file:
                 head_file = file
                 phot_file = file.replace('HEAD', 'PHOT')
@@ -353,10 +377,9 @@ class WGAN:
         min_t, max_t = all_df.t.min(), all_df.t.max()
         min_mag, max_mag = all_df.mag.max(), all_df.mag.min()
         all_df = all_df[all_df.mag_err < 1]  # Remove points with magnitude uncertainties greater than 1 mag
-        scaled_mag = all_df['mag'].values - np.mean([min_mag, max_mag])
-        scaled_mag /= (max_mag - min_mag) / 2
+        scaled_mag = (all_df['mag'] - min_mag) / (max_mag - min_mag)
         all_df['mag'] = scaled_mag
-        all_df['mag_err'] /= np.abs(max_mag - min_mag) / 2
+        all_df['mag_err'] /= np.abs(max_mag - min_mag)
         # all_df = all_df[~(all_df.mag < 0.1)]  # Remove bad points # & (all_df.mag_err > 0.5))]
 
         all_new_df = None
@@ -491,7 +514,7 @@ class WGAN:
                 all_new_df = new_sn_df.copy()
             else:
                 all_new_df = pd.concat([all_new_df, new_sn_df])
-        print(used_count, skip_count, gp_error, less_than_zero)
+        print(used_count, skip_count, gp_error, less_than_zero, nans, no_peak, no_points)
         all_new_df.to_csv(self.dataset_path)
         scaling_factors = [min_t, max_t, min_mag, max_mag]
         pickle.dump(scaling_factors,
@@ -563,8 +586,8 @@ class WGAN:
         Generates light curve plots for training sample
         """
         print('Generating plots for training sample...')
-        if not os.path.exists(os.path.join(self.root, 'Training_sample')):
-            os.mkdir(os.path.join(self.root, 'Training_sample'))
+        if not os.path.exists(os.path.join(self.plot_root, 'Training_sample')):
+            os.mkdir(os.path.join(self.plot_root, 'Training_sample'))
         for sn in tqdm(self.train_df.sn.unique()):
             sndf = self.train_df[self.train_df.sn == sn]
             plt.figure(figsize=(12, 8))
@@ -596,8 +619,8 @@ class WGAN:
         :param plot_interval: int, number of epochs between showing examples plots
         """
         print('Starting training...')
-        if not os.path.exists(os.path.join(self.root, 'Train_plots')):
-            os.mkdir(os.path.join(self.root, 'Train_plots'))
+        if not os.path.exists(os.path.join(self.plot_root, 'Train_plots')):
+            os.mkdir(os.path.join(self.plot_root, 'Train_plots'))
         with tf.device(self.device):
             rng = np.random.default_rng(123)
 
@@ -670,11 +693,11 @@ class WGAN:
                 self.wgan.save(os.path.join(self.wgan_dir, f'{epoch + 1}.tf'))
                 full_g_loss = np.mean(g_losses)
                 full_d_loss = np.mean(d_losses)
-                print(f'{epoch + 1}/{epochs} g_loss={full_g_loss}, d_loss={full_d_loss}')#, '
-                      # f'Real prediction: {np.mean(real_predictions)} +- {np.std(real_predictions)}, '
-                      # f'Fake prediction: {np.mean(fake_predictions)} +- {np.std(fake_predictions)}')
-                      # f' Ranges: x [{np.min(gen_lcs[:, :, 0])}, {np.max(gen_lcs[:, :, 0])}], '
-                      # f'y [{np.min(gen_lcs[:, :, 1])}, {np.max(gen_lcs[:, :, 1])}]')
+                print(f'{epoch + 1}/{epochs} g_loss={full_g_loss}, d_loss={full_d_loss}')  # , '
+                # f'Real prediction: {np.mean(real_predictions)} +- {np.std(real_predictions)}, '
+                # f'Fake prediction: {np.mean(fake_predictions)} +- {np.std(fake_predictions)}')
+                # f' Ranges: x [{np.min(gen_lcs[:, :, 0])}, {np.max(gen_lcs[:, :, 0])}], '
+                # f'y [{np.min(gen_lcs[:, :, 1])}, {np.max(gen_lcs[:, :, 1])}]')
 
                 plot_test = test_gen_lcs[0, :, :]
                 fig = plt.figure(figsize=(12, 8))
@@ -688,7 +711,8 @@ class WGAN:
                             ax.errorbar(x, y, yerr=y_err, label=f, fmt='x')
                             ax.errorbar(X[:, f_ind], X[:, f_ind + 4], yerr=X[:, f_ind + 8], fmt='x')
                         elif self.ds == 2:
-                            x, y, y_err = plot_test[:, f_ind * 3], plot_test[:, f_ind * 3 + 1], plot_test[:, f_ind*3+2]
+                            x, y, y_err = plot_test[:, f_ind * 3], plot_test[:, f_ind * 3 + 1], plot_test[:,
+                                                                                                f_ind * 3 + 2]
                             ax.errorbar(x, y, yerr=y_err, label=f, fmt='x')
                             ax.errorbar(X[:, f_ind * 3], X[:, f_ind * 3 + 1], yerr=X[:, f_ind * 3 + 2], fmt='x')
                         # ax.errorbar(x, y, yerr=y_err, label=f, fmt='x')
@@ -703,7 +727,7 @@ class WGAN:
                         ax.scatter(X[:, 0], X[:, f_ind + 1])
                     ax.legend()
                 plt.suptitle(f'Epoch {epoch + 1}/{epochs}')  #: Type {self.class_label_dict[sn_type]}')
-                plt.savefig(os.path.join(self.root, 'Train_plots', f'{epoch + 1}.png'))
+                plt.savefig(os.path.join(self.plot_root, 'Train_plots', f'{epoch + 1}.png'))
                 if plot_interval is not None:
                     if (epoch + 1) % plot_interval == 0:
                         plt.show()
@@ -803,7 +827,7 @@ class WGAN:
             gdf['t'] = gdf['t'] * (self.scaling_factors[1] - self.scaling_factors[0]) + self.scaling_factors[0]
             for f in ['g', 'r', 'i', 'z']:
                 gdf[f] = gdf[f] * ((self.scaling_factors[3] - self.scaling_factors[2]) / 2) + \
-                            np.mean([self.scaling_factors[3], self.scaling_factors[2]])
+                         np.mean([self.scaling_factors[3], self.scaling_factors[2]])
             if all_gen_df is None:
                 all_gen_df = gdf.copy()
             else:
@@ -837,92 +861,648 @@ class WGAN:
                 plt.xlabel('Phase (days)')
                 plt.ylabel(f)
                 plt.legend()
-                if not os.path.exists(os.path.join(self.root, 'colour_curves')):
-                    os.mkdir(os.path.join(self.root, 'colour_curves'))
-                plt.savefig(os.path.join(self.root, 'colour_curves', f'{self.class_label_dict[sn_type]}_{f}_{n}.png'))
+                if not os.path.exists(os.path.join(self.plot_root, 'colour_curves')):
+                    os.mkdir(os.path.join(self.plot_root, 'colour_curves'))
+                plt.savefig(
+                    os.path.join(self.plot_root, 'colour_curves', f'{self.class_label_dict[sn_type]}_{f}_{n}.png'))
                 plt.close('all')
 
-    def gen_lightcurves(self, n=10, length=20):
-        noise = rand.normal(size=(n, self.latent_dims))
-        noise = np.reshape(noise, (n, 1, self.latent_dims))
-        noise = np.repeat(noise, length, 1)
-        self.generator.load_weights(self.generator_path)
-        gen_lcs = self.generator.predict(noise)
-        gen_lcs[:, :, 0] = gen_lcs[:, :, 0] * (self.scaling_factors[1] - self.scaling_factors[0]) + \
-                           self.scaling_factors[0]
-        gen_lcs[:, :, 1:] = gen_lcs[:, :, 1:] * ((self.scaling_factors[3] - self.scaling_factors[2]) / 2) + np.mean(
-            [self.scaling_factors[3], self.scaling_factors[2]])
-        for i in range(n):
-            # Plot generated data
-            data = gen_lcs[i, :, :]
-            x = data[:, 0]
-            fig = plt.figure(figsize=(12, 8))
-            for f_ind, f in enumerate(['g', 'r', 'i', 'z']):
-                ax = fig.add_subplot(2, 2, f_ind + 1)
-                x = gen_lcs[i, :, 0]
-                y = gen_lcs[i, :, f_ind + 1]
-                ax.scatter(x, y, label=f)
-                ax.legend()
-                ax.invert_yaxis()
-            plt.show()
-
-    def plot_lightcurves(self, n=10, length=12, model=None, epochs=np.arange(1, 201)):
+    def plot_lightcurves(self, n=10, length=12, model=None, epochs=np.arange(1, 201), show=False):
         for epoch in tqdm(epochs):
-            if not os.path.exists(os.path.join(self.root, 'Generated_Plots')):
-                os.mkdir(os.path.join(self.root, 'Generated_Plots'))
+            if not os.path.exists(os.path.join(self.plot_root, 'Generated_Plots')):
+                os.mkdir(os.path.join(self.plot_root, 'Generated_Plots'))
             noise = rand.normal(size=(n, self.latent_dims))
             noise = np.reshape(noise, (n, 1, self.latent_dims))
             noise = np.repeat(noise, length, 1)
-            # self.wgan(np.zeros((1, 15, 12)))
             self.wgan = keras.models.load_model(os.path.join(self.wgan_dir, f'{epoch}.tf'))
             gen_lcs = self.wgan.generator.predict(noise)
-            gen_lcs[:, :, 0:4] = gen_lcs[:, :, 0:4] * (self.scaling_factors[1] - self.scaling_factors[0]) + \
-                                self.scaling_factors[0]
-            gen_lcs[:, :, 4:8] = gen_lcs[:, :, 4:8] * ((self.scaling_factors[3] - self.scaling_factors[2]) / 2) + np.mean(
-                [self.scaling_factors[3], self.scaling_factors[2]])
-            gen_lcs[:, :, 8:] = gen_lcs[:, :, 8:] * ((self.scaling_factors[3] - self.scaling_factors[2]) / 2)
-            sn = np.random.choice(self.train_df.sn.values)
-            sndf = self.train_df[self.train_df.sn == sn]
-            X = sndf[['g_t', 'r_t', 'i_t', 'z_t', 'g', 'r', 'i', 'z', 'g_err',
-                                      'r_err', 'i_err', 'z_err']].values
-            X = X.reshape((1, *X.shape))
-            X[:, :, 0:4] = X[:, :, 0:4] * (self.scaling_factors[1] - self.scaling_factors[0]) + \
-                                 self.scaling_factors[0]
-            X[:, :, 4:8] = X[:, :, 4:8] * (
+            if not self.inc_colour:
+                gen_lcs[:, :, 0:4] = gen_lcs[:, :, 0:4] * (self.scaling_factors[1] - self.scaling_factors[0]) + \
+                                     self.scaling_factors[0]
+                gen_lcs[:, :, 4:8] = gen_lcs[:, :, 4:8] * (
                         (self.scaling_factors[3] - self.scaling_factors[2]) / 2) + np.mean(
-                [self.scaling_factors[3], self.scaling_factors[2]])
-            X[:, :, 8:] = X[:, :, 8:] * ((self.scaling_factors[3] - self.scaling_factors[2]) / 2)
-            for i in np.arange(n):
-                # Plot generated data
-                data = gen_lcs[i, :, :]
-                g_band_max = gen_lcs[i, :, 0][np.argmin(gen_lcs[i, :, 4])]
-                g_band_max_real = X[0, :, 0][np.argmin(X[0, :, 4])]
-                fig = plt.figure(figsize=(12, 8))
-                ax_list = []
-                for f_ind, f in enumerate(['g', 'r', 'i', 'z']):
-                    ax = fig.add_subplot(2, 2, f_ind + 1)
-                    x = gen_lcs[i, :, f_ind] - g_band_max
-                    y = gen_lcs[i, :, f_ind + 4]
-                    y_err = gen_lcs[i, :, f_ind + 8]
-                    ax.errorbar(x, y, yerr=y_err, label=f'{f} (Generated)', fmt='x')
-                    x = X[0, :, f_ind] - g_band_max_real
-                    y = X[0, :, f_ind + 4]  # - 2
-                    y_err = X[0, :, f_ind + 8]
-                    ax.errorbar(x, y, yerr=y_err, label=f'{f} (Real)', fmt='x')
-                    ax.legend(fontsize=16) #, loc='upper right')
-                    # ax.annotate(f, (0.03, 0.9), xycoords='axes fraction')
-                    ax.invert_yaxis()
-                    ax.set_xlabel('Days since g-band maximum')
-                    if f_ind in [0, 2]:
-                        ax.set_ylabel('Apparent magnitude')
-                    ax_list.append(ax)
-                ax_list[0].get_shared_x_axes().join(*ax_list)
-                ax_list[0].get_shared_y_axes().join(*ax_list)
-                ax_list[1].set_yticklabels([])
-                ax_list[3].set_yticklabels([])
-                plt.subplots_adjust(hspace=0, wspace=0)
-                plt.savefig(os.path.join(self.root, 'Generated_Plots', f'{epoch}-{i + 1}.png'))
-                # plt.show()
-                plt.close('all')
+                    [self.scaling_factors[3], self.scaling_factors[2]])
+                gen_lcs[:, :, 8:] = gen_lcs[:, :, 8:] * ((self.scaling_factors[3] - self.scaling_factors[2]) / 2)
+                sn = np.random.choice(self.train_df.sn.values)
+                sndf = self.train_df[self.train_df.sn == sn]
+                X = sndf[['g_t', 'r_t', 'i_t', 'z_t', 'g', 'r', 'i', 'z', 'g_err',
+                          'r_err', 'i_err', 'z_err']].values
+                X = X.reshape((1, *X.shape))
+                X[:, :, 0:4] = X[:, :, 0:4] * (self.scaling_factors[1] - self.scaling_factors[0]) + \
+                               self.scaling_factors[0]
+                X[:, :, 4:8] = X[:, :, 4:8] * (
+                        (self.scaling_factors[3] - self.scaling_factors[2]) / 2) + np.mean(
+                    [self.scaling_factors[3], self.scaling_factors[2]])
+                X[:, :, 8:] = X[:, :, 8:] * ((self.scaling_factors[3] - self.scaling_factors[2]) / 2)
+                for i in np.arange(n):
+                    # Plot generated data
+                    data = gen_lcs[i, :, :]
+                    g_band_max = gen_lcs[i, :, 0][np.argmin(gen_lcs[i, :, 4])]
+                    g_band_max_real = X[0, :, 0][np.argmin(X[0, :, 4])]
+                    fig = plt.figure(figsize=(12, 8))
+                    ax_list = []
+                    for f_ind, f in enumerate(['g', 'r', 'i', 'z']):
+                        ax = fig.add_subplot(2, 2, f_ind + 1)
+                        x = gen_lcs[i, :, f_ind] - g_band_max
+                        y = gen_lcs[i, :, f_ind + 4]
+                        y_err = gen_lcs[i, :, f_ind + 8]
+                        ax.errorbar(x, y, yerr=y_err, label=f'{f} (Generated)', fmt='x')
+                        x = X[0, :, f_ind] - g_band_max_real
+                        y = X[0, :, f_ind + 4]  # - 2
+                        y_err = X[0, :, f_ind + 8]
+                        ax.errorbar(x, y, yerr=y_err, label=f'{f} (Real)', fmt='x')
+                        ax.legend(fontsize=16)  # , loc='upper right')
+                        # ax.annotate(f, (0.03, 0.9), xycoords='axes fraction')
+                        ax.invert_yaxis()
+                        if f_ind in [2, 3]:
+                            ax.set_xlabel('Days since g-band maximum')
+                        if f_ind in [0, 2]:
+                            ax.set_ylabel('Apparent magnitude')
+                        ax_list.append(ax)
+                    ax_list[0].get_shared_x_axes().join(*ax_list)
+                    ax_list[0].get_shared_y_axes().join(*ax_list)
+                    ax_list[1].set_yticklabels([])
+                    ax_list[3].set_yticklabels([])
+                    plt.subplots_adjust(hspace=0, wspace=0)
+                    if show:
+                        plt.show()
+                    else:
+                        plt.savefig(os.path.join(self.plot_root, 'Generated_Plots', f'{epoch}-{i + 1}.png'))
+                        plt.close('all')
+            else:
+                gen_lcs[:, :, 0] = gen_lcs[:, :, 0] * (self.scaling_factors[1] - self.scaling_factors[0]) + \
+                                   self.scaling_factors[0]
+                gen_lcs[:, :, [1, 3, 5, 7]] = gen_lcs[:, :, [1, 3, 5, 7]] * (
+                        (self.scaling_factors[3] - self.scaling_factors[2]) / 2) + np.mean(
+                    [self.scaling_factors[3], self.scaling_factors[2]])
+                gen_lcs[:, :, [2, 4, 6]] = gen_lcs[:, :, [2, 4, 6]] * (
+                        (self.scaling_factors[3] - self.scaling_factors[2]) / 2)
+                gen_lcs[:, :, 8:] = gen_lcs[:, :, 8:] * ((self.scaling_factors[3] - self.scaling_factors[2]) / 2)
+                sn = np.random.choice(self.train_df.sn.values)
+                sndf = self.train_df[self.train_df.sn == sn]
+                sndf[['g', 'r', 'i', 'z']] = 2 * (sndf[['g', 'r', 'i', 'z']] - 0.5)
+                sndf[['g_err', 'r_err', 'i_err', 'z_err']] = 2 * sndf[['g_err', 'r_err', 'i_err', 'z_err']]
+                sndf['g-r'] = sndf.g.values - sndf.r.values
+                sndf['r-i'] = sndf.r.values - sndf.i.values
+                sndf['i-z'] = sndf.i.values - sndf.z.values
+                X = sndf[['t', 'g', 'g-r', 'r', 'r-i', 'i', 'i-z', 'z', 'g_err',
+                          'r_err', 'i_err', 'z_err']].values
+                X = X.reshape((1, *X.shape))
+                X[:, :, 0] = X[:, :, 0] * (self.scaling_factors[1] - self.scaling_factors[0]) + \
+                             self.scaling_factors[0]
+                X[:, :, [1, 3, 5, 7]] = X[:, :, [1, 3, 5, 7]] * (
+                        (self.scaling_factors[3] - self.scaling_factors[2]) / 2) + np.mean(
+                    [self.scaling_factors[3], self.scaling_factors[2]])
+                X[:, :, [2, 4, 6]] = X[:, :, [2, 4, 6]] * (
+                        (self.scaling_factors[3] - self.scaling_factors[2]) / 2)
+                X[:, :, 8:] = X[:, :, 8:] * ((self.scaling_factors[3] - self.scaling_factors[2]) / 2)
+                for i in np.arange(n):
+                    # Plot generated data
+                    data = gen_lcs[i, :, :]
+                    g_band_max = gen_lcs[i, :, 0][np.argmin(gen_lcs[i, :, 4])]
+                    g_band_max_real = X[0, :, 0][np.argmin(X[0, :, 4])]
+                    fig = plt.figure(figsize=(12, 8))
+                    ax_list = []
+                    for f_ind, f in enumerate(['g', 'r', 'i', 'z']):
+                        ax = fig.add_subplot(2, 2, f_ind + 1)
+                        x = gen_lcs[i, :, 0] - g_band_max
+                        y = gen_lcs[i, :, 1 + 2 * f_ind]
+                        y_err = gen_lcs[i, :, f_ind + 8]
+                        ax.errorbar(x, y, yerr=y_err, label=f'{f} (Generated)', fmt='x')
+                        x = X[0, :, 0] - g_band_max_real
+                        y = X[0, :, 1 + 2 * f_ind]  # - 2
+                        y_err = X[0, :, f_ind + 8]
+                        ax.errorbar(x, y, yerr=y_err, label=f'{f} (Real)', fmt='x')
+                        ax.legend(fontsize=16)  # , loc='upper right')
+                        # ax.annotate(f, (0.03, 0.9), xycoords='axes fraction')
+                        ax.invert_yaxis()
+                        if f_ind in [2, 3]:
+                            ax.set_xlabel('Days since g-band maximum')
+                        if f_ind in [0, 2]:
+                            ax.set_ylabel('Apparent magnitude')
+                        ax_list.append(ax)
+                    ax_list[0].get_shared_x_axes().join(*ax_list)
+                    ax_list[0].get_shared_y_axes().join(*ax_list)
+                    ax_list[1].set_yticklabels([])
+                    ax_list[3].set_yticklabels([])
+                    plt.subplots_adjust(hspace=0, wspace=0)
+                if show:
+                    plt.show()
+                else:
+                    plt.savefig(os.path.join(self.plot_root, 'Generated_Plots', f'{epoch}-{i + 1}.png'))
+                    plt.close('all')
                 # raise ValueError('Nope')
                 # break
+
+    def sample_analysis(self, n=1, epoch=1000, plot_lcs=False, name_suffix=None):
+        if name_suffix is not None:
+            self.plot_root = self.plot_root + f'_{name_suffix}'
+            self.wgan_dir = os.path.join(os.path.split(self.wgan_dir)[0] + f'_{name_suffix}', 'model_weights')
+        if not os.path.exists(os.path.join(self.plot_root, 'Real_Plots')):
+            os.mkdir(os.path.join(self.plot_root, 'Real_Plots'))
+        if not os.path.exists(os.path.join(self.plot_root, 'Generated_Plots')):
+            os.mkdir(os.path.join(self.plot_root, 'Generated_Plots'))
+        if not os.path.exists(os.path.join(self.plot_root, 'Summary_Plots')):
+            os.mkdir(os.path.join(self.plot_root, 'Summary_Plots'))
+        if not os.path.exists(os.path.join(self.plot_root, 'Summary_Plots', str(epoch))):
+            os.mkdir(os.path.join(self.plot_root, 'Summary_Plots', str(epoch)))
+        if not os.path.exists(os.path.join(self.plot_root, 'Generated_Plots', str(epoch))):
+            os.mkdir(os.path.join(self.plot_root, 'Generated_Plots', str(epoch)))
+
+        real_df, gen_df = None, None
+        real_gp_df, gen_gp_df = None, None
+        real_scaled_df, gen_scaled_df = None, None
+        self.wgan = keras.models.load_model(os.path.join(self.wgan_dir, f'{epoch}.tf'))
+        sn_props = ['g_max', 'r_max', 'i_max', 'z_max', 'g15', 'r15', 'i15', 'z15', 'g-r', 'r-i', 'i-z']
+        real_prop_dict = {key: [] for key in sn_props}
+        gen_prop_dict = {key: [] for key in sn_props}
+        colour_dict = {'g': 'g', 'r': 'r', 'i': 'b', 'z': 'k'}
+        label_dict = {'g_max': r'Peak $g$-band apparent magnitude',
+                      'r_max': r'Peak $r$-band apparent magnitude',
+                      'i_max': r'Peak $i$-band apparent magnitude',
+                      'z_max': r'Peak $z$-band apparent magnitude',
+                      'g15': r'$\Delta m_{g,15}$',
+                      'r15': r'$\Delta m_{r,15}$',
+                      'i15': r'$\Delta m_{i,15}$',
+                      'z15': r'$\Delta m_{z,15}$',
+                      'g-r': r'$g-r$',
+                      'r-i': r'$r-i$',
+                      'i-z': r'$i-z$'
+                      }
+        bin_step_dict = {'g_max': 0.25,
+                         'r_max': 0.25,
+                         'i_max': 0.25,
+                         'z_max': 0.25,
+                         'g15': 0.1,
+                         'r15': 0.1,
+                         'i15': 0.1,
+                         'z15': 0.1,
+                         'g-r': 0.25,
+                         'r-i': 0.25,
+                         'i-z': 0.25
+                         }
+        gen_number = 1
+        for sn in tqdm(self.train_df.sn.unique(), total=len(self.train_df.sn.unique())):
+            # if len(real_prop_dict['g_max']) > 40:
+            #    continue
+            sndf = self.train_df[self.train_df.sn == sn]
+            if not self.inc_colour:
+                # Fit for real SN first
+                sndf = sndf[['sn', 'g_t', 'r_t', 'i_t', 'z_t', 'g', 'r', 'i', 'z', 'g_err',
+                             'r_err', 'i_err', 'z_err']]
+            else:
+                sndf = sndf[['sn', 't', 'g', 'r', 'i', 'z', 'g_err',
+                             'r_err', 'i_err', 'z_err']]
+                sndf['g_t'] = sndf['t'].values
+                sndf['r_t'] = sndf['t'].values
+                sndf['i_t'] = sndf['t'].values
+                sndf['z_t'] = sndf['t'].values
+                sndf = sndf[['sn', 'g_t', 'r_t', 'i_t', 'z_t', 'g', 'r', 'i', 'z', 'g_err',
+                             'r_err', 'i_err', 'z_err']]
+            timesteps = sndf.shape[0]
+            full_sndf = sndf.copy()
+
+            gen_tries, gen_count = 0, 0
+            # for i in range(n):
+            while gen_count < n:
+                if gen_tries > 20 and gen_count == 0:
+                    break
+                noise = rand.normal(size=(1, self.latent_dims))
+                noise = np.reshape(noise, (1, 1, self.latent_dims))
+                noise = np.repeat(noise, timesteps, 1)
+                gen_lcs = self.wgan.generator.predict(noise)
+                X = gen_lcs[0, :, :]
+                days = X[:, 0:4] * (self.scaling_factors[1] - self.scaling_factors[0])
+                day_diffs = np.diff(days, axis=0)
+                gen_tries += 1
+                if np.min(day_diffs.flatten()) < 0.5:
+                    continue
+                gen_count += 1
+
+                if not self.inc_colour:
+                    gen_sndf = pd.DataFrame(X, columns=sndf.columns[1:])
+                else:
+                    gen_sndf = pd.DataFrame(X, columns=['t', 'g', 'g_r', 'r', 'r_i', 'i', 'i_z', 'z', 'g_err', 'r_err',
+                                                        'i_err', 'z_err'])
+                    gen_sndf['g_t'] = gen_sndf['t'].values
+                    gen_sndf['r_t'] = gen_sndf['t'].values
+                    gen_sndf['i_t'] = gen_sndf['t'].values
+                    gen_sndf['z_t'] = gen_sndf['t'].values
+                    gen_sndf = gen_sndf[['g_t', 'r_t', 'i_t', 'z_t', 'g', 'r', 'i', 'z', 'g_err',
+                                 'r_err', 'i_err', 'z_err']]
+                    gen_sndf[['g', 'r', 'i', 'z']] = 0.5 * gen_sndf[['g', 'r', 'i', 'z']] + 0.5
+                    gen_sndf[['g_err', 'r_err', 'i_err', 'z_err']] = 0.5 * gen_sndf[['g_err', 'r_err', 'i_err', 'z_err']]
+                gen_sndf['sn'] = f'gen_{gen_number}'
+                gen_number += 1
+                full_sndf = pd.concat([full_sndf, gen_sndf])
+
+            for sname in full_sndf.sn.unique():
+                sndf = full_sndf[full_sndf.sn == sname]
+                gen = True if 'gen' in str(sname) else False
+                all_t = np.r_[sndf.g_t.values, sndf.r_t.values, sndf.i_t.values, sndf.z_t.values]
+                day_step = 0.1
+                t_step = day_step / (self.scaling_factors[1] - self.scaling_factors[0])
+                fit_t = np.arange(all_t.min(), all_t.max(), t_step)
+
+                snfitdf = pd.DataFrame(fit_t, columns=['t'])
+
+                for f in ['g', 'r', 'i', 'z']:
+                    gp = george.GP(Matern32Kernel(1))
+                    t, y, y_err = sndf[f'{f}_t'], sndf[f], sndf[f'{f}_err']
+                    gp.compute(t, y_err)
+                    p0 = gp.kernel.get_parameter_vector()[0]
+
+                    def ll(p):
+                        gp.set_parameter_vector(p)
+                        return -gp.log_likelihood(y, quiet=True)
+
+                    def grad_ll(p):
+                        gp.set_parameter_vector(p)
+                        return -gp.grad_log_likelihood(y, quiet=True)
+
+                    results = spopt.minimize(ll, p0, jac=grad_ll)
+                    mu, cov = gp.predict(y, fit_t)
+                    std = np.sqrt(np.diag(cov))
+                    snfitdf[f] = mu
+                    snfitdf[f'{f}_err'] = std
+
+                sndf[['g_t', 'r_t', 'i_t', 'z_t']] = sndf[['g_t', 'r_t', 'i_t', 'z_t']] * \
+                                                     (self.scaling_factors[1] - self.scaling_factors[0]) + \
+                                                     self.scaling_factors[0]
+                sndf[['g', 'r', 'i', 'z']] = sndf[['g', 'r', 'i', 'z']] * (
+                        self.scaling_factors[3] - self.scaling_factors[2]) + self.scaling_factors[2]
+                sndf[['g_err', 'r_err', 'i_err', 'z_err']] = sndf[['g_err', 'r_err', 'i_err', 'z_err']] * (
+                        self.scaling_factors[3] - self.scaling_factors[2]) * -1
+                snfitdf['t'] = snfitdf['t'] * (self.scaling_factors[1] - self.scaling_factors[0]) + \
+                               self.scaling_factors[0]
+                snfitdf[['g', 'r', 'i', 'z']] = snfitdf[['g', 'r', 'i', 'z']] * (
+                        self.scaling_factors[3] - self.scaling_factors[2]) + self.scaling_factors[2]
+                snfitdf[['g_err', 'r_err', 'i_err', 'z_err']] = snfitdf[['g_err', 'r_err', 'i_err', 'z_err']] * (
+                        self.scaling_factors[3] - self.scaling_factors[2]) * -1
+
+                maxes = [snfitdf[snfitdf[f] == snfitdf[f].min()]['t'].values[0] for f in ['g', 'r', 'i', 'z']]
+                tmax = np.min(maxes)
+                # tmax = snfitdf[snfitdf.g == snfitdf.g.min()]['t'].values[0]  # Just for g-band
+
+                first_t = np.min(sndf[['g_t', 'r_t', 'i_t', 'z_t']].values.flatten())
+                t_shift = tmax
+                sndf[['g_t', 'r_t', 'i_t', 'z_t']] -= t_shift
+                snfitdf['t'] -= t_shift
+                if -snfitdf['t'].min() > 3 * snfitdf['t'].max():  # Remove objects which don't peak
+                    continue
+                if gen:
+                    if gen_df is None:
+                        gen_df = sndf.copy()
+                    else:
+                        gen_df = pd.concat([gen_df, sndf])
+                else:
+                    if real_df is None:
+                        real_df = sndf.copy()
+                    else:
+                        real_df = pd.concat([real_df, sndf])
+                if gen:
+                    if gen_gp_df is None:
+                        gen_gp_df = snfitdf.copy()
+                    else:
+                        gen_gp_df = pd.concat([gen_gp_df, snfitdf])
+                else:
+                    if real_gp_df is None:
+                        real_gp_df = snfitdf.copy()
+                    else:
+                        real_gp_df = pd.concat([real_gp_df, snfitdf])
+
+                # Scaled light curves
+                scaled_sndf = sndf.copy()
+                for f_ind, f in enumerate(['g', 'r', 'i', 'z']):
+                    fmax = scaled_sndf[f].min()
+                    scaled_sndf[f] -= fmax
+                if gen:
+                    if gen_scaled_df is None:
+                        gen_scaled_df = scaled_sndf.copy()
+                    else:
+                        gen_scaled_df = pd.concat([gen_scaled_df, scaled_sndf])
+                else:
+                    if real_scaled_df is None:
+                        real_scaled_df = scaled_sndf.copy()
+                    else:
+                        real_scaled_df = pd.concat([real_scaled_df, scaled_sndf])
+
+                # Get SN properties
+                if plot_lcs:
+                    fig, axs = plt.subplots(2, 2, sharex=True, sharey=True, figsize=(12, 8))
+                stop = 0
+                for f_ind, f in enumerate(['g', 'r', 'i', 'z']):
+                    max_df = snfitdf[snfitdf[f] == snfitdf[f].min()]
+                    if max_df.shape[0] > 1:
+                        max_df = max_df.iloc[[0], :]
+                    max_mag = snfitdf[f].min()
+                    m15 = snfitdf[np.around(snfitdf['t'], 1) == np.around(max_df['t'].values[0] + 15, 1)][f] \
+                          - max_mag
+                    if plot_lcs:
+                        ax = axs.flatten()[f_ind]
+                        ax.errorbar(sndf[f'{f}_t'], sndf[f], yerr=sndf[f'{f}_err'], fmt='x', color=colour_dict[f])
+                        ax.plot(snfitdf['t'], snfitdf[f], label=f, c=colour_dict[f])
+                        ax.fill_between(snfitdf['t'], snfitdf[f] - snfitdf[f'{f}_err'],
+                                        snfitdf[f] + snfitdf[f'{f}_err'], alpha=0.3, color=colour_dict[f])
+                        ax.scatter(max_df['t'], max_mag, color=colour_dict[f])
+                        if not m15.empty:
+                            ax.scatter(max_df['t'].values[0] + 15, max_mag + m15, color=colour_dict[f])
+                        ax.legend()
+                    if gen:
+                        gen_prop_dict[f'{f}_max'].append(snfitdf[f].min())
+                        if not m15.empty:
+                            gen_prop_dict[f'{f}15'].append(m15.values[0])
+                        else:
+                            stop += 1
+                            gen_prop_dict[f'{f}15'].append(np.nan)
+                        if f == 'g':
+                            max_colour = max_df.g - max_df.r
+                            gen_prop_dict['g-r'].append(max_colour.values[0])
+                        elif f == 'r':
+                            max_colour = max_df.r - max_df.i
+                            gen_prop_dict['r-i'].append(max_colour.values[0])
+                        elif f == 'i':
+                            max_colour = max_df.i - max_df.z
+                            gen_prop_dict['i-z'].append(max_colour.values[0])
+                    else:
+                        real_prop_dict[f'{f}_max'].append(snfitdf[f].min())
+                        if not m15.empty:
+                            real_prop_dict[f'{f}15'].append(m15.values[0])
+                        else:
+                            stop += 1
+                            real_prop_dict[f'{f}15'].append(np.nan)
+                        if f == 'g':
+                            max_colour = max_df.g - max_df.r
+                            real_prop_dict['g-r'].append(max_colour.values[0])
+                        elif f == 'r':
+                            max_colour = max_df.r - max_df.i
+                            real_prop_dict['r-i'].append(max_colour.values[0])
+                        elif f == 'i':
+                            max_colour = max_df.i - max_df.z
+                            real_prop_dict['i-z'].append(max_colour.values[0])
+                if plot_lcs:
+                    ax.invert_yaxis()
+                    axs[1, 0].set_xlabel('Phase')
+                    axs[1, 1].set_xlabel('Phase')
+                    ax0 = fig.add_subplot(111, frameon=False)
+                    ax0.tick_params(axis='both', which='both', left=False, right=False, bottom=False, top=False,
+                                    labelbottom=False, labelleft=False, labeltop=False)
+                    ax0.set_ylabel('Apparent magnitude', labelpad=40)
+                    plt.subplots_adjust(hspace=0, wspace=0)
+                    if gen:
+                        plt.savefig(os.path.join(self.plot_root, 'Generated_Plots', str(epoch), f'{sname}.png'),
+                                    bbox_inches='tight')
+                    else:
+                        plt.savefig(os.path.join(self.plot_root, 'Real_Plots', f'{sname}.png'), bbox_inches='tight')
+                    plt.close('all')
+
+        for key in real_prop_dict.keys():
+            fig, ax = plt.subplots(2, figsize=(10, 14), sharex=True)
+            bin_step = bin_step_dict[key]
+            all_vals = np.array(real_prop_dict[key] + gen_prop_dict[key])
+            low = np.floor(np.nanmin(all_vals) * (1 / bin_step)) / (1 / bin_step)
+            up = np.ceil(np.nanmax(all_vals) * (1 / bin_step)) / (1 / bin_step)
+            bins = np.arange(low, up + bin_step, bin_step)
+            # Plot histograms
+            ax[0].hist(real_prop_dict[key], bins=bins, density=True, histtype='step', color='r', ls='-', label='Real')
+            ax[0].hist(gen_prop_dict[key], bins=bins, density=True, histtype='step', color='b', ls='--',
+                       label='Generated')
+            ax[0].legend()
+            ax[0].set_ylabel('Frequency Density')
+            # Plot CDFs
+            real_data = np.array(real_prop_dict[key])
+            real_data = real_data[~np.isnan(real_data)]
+            real_data = np.sort(real_data)
+            gen_data = np.array(gen_prop_dict[key])
+            gen_data = gen_data[~np.isnan(gen_data)]
+            gen_data = np.sort(gen_data)
+            ks = stats.ks_2samp(real_data, gen_data)
+            ax[1].plot(real_data, np.arange(1, real_data.shape[0] + 1) / real_data.shape[0], c='r', ls='-')
+            ax[1].plot(gen_data, np.arange(1, gen_data.shape[0] + 1) / gen_data.shape[0], c='b', ls='--')
+            ax[1].set_xlabel(label_dict[key])
+            ax[1].set_ylabel('Cumulative Frequency Density')
+            ax[1].set_ylim([0, 1.19])
+            plt.subplots_adjust(hspace=0, wspace=0)
+            fig.align_ylabels()
+            plt.savefig(os.path.join(self.plot_root, 'Summary_Plots', str(epoch), f'{key}.png'), bbox_inches='tight')
+            plt.show()
+
+        t_step = 0.5
+
+        real_ts = []
+        real_gr, real_ri, real_iz = [], [], []
+        real_gr_err, real_ri_err, real_iz_err = [], [], []
+        for t_low in np.arange(real_gp_df['t'].min(), real_gp_df['t'].max(), t_step):
+            t_up = t_low + t_step
+            real_ts.append(t_low + 0.5 * t_step)
+            tdf = real_gp_df[(real_gp_df['t'] > t_low) & (real_gp_df['t'] < t_up)]
+            tdf['g-r'] = tdf.g - tdf.r
+            tdf['r-i'] = tdf.r - tdf.i
+            tdf['i-z'] = tdf.i - tdf.z
+            real_gr.append(tdf['g-r'].mean())
+            real_gr_err.append(tdf['g-r'].std())
+            real_ri.append(tdf['r-i'].mean())
+            real_ri_err.append(tdf['r-i'].std())
+            real_iz.append(tdf['r-i'].mean())
+            real_iz_err.append(tdf['r-i'].std())
+        real_gr, real_ri, real_iz = np.array(real_gr), np.array(real_ri), np.array(real_iz)
+        real_gr_err, real_ri_err, real_iz_err = np.array(real_gr_err), np.array(real_ri_err), np.array(real_iz_err)
+
+        gp_ts = []
+        gp_gr, gp_ri, gp_iz = [], [], []
+        gp_gr_err, gp_ri_err, gp_iz_err = [], [], []
+        for t_low in np.arange(gen_gp_df['t'].min(), gen_gp_df['t'].max(), t_step):
+            t_up = t_low + t_step
+            gp_ts.append(t_low + 0.5 * t_step)
+            tdf = gen_gp_df[(gen_gp_df['t'] > t_low) & (gen_gp_df['t'] < t_up)]
+            tdf['g-r'] = tdf.g - tdf.r
+            tdf['r-i'] = tdf.r - tdf.i
+            tdf['i-z'] = tdf.i - tdf.z
+            gp_gr.append(tdf['g-r'].mean())
+            gp_gr_err.append(tdf['g-r'].std())
+            gp_ri.append(tdf['r-i'].mean())
+            gp_ri_err.append(tdf['r-i'].std())
+            gp_iz.append(tdf['r-i'].mean())
+            gp_iz_err.append(tdf['r-i'].std())
+        gp_gr, gp_ri, gp_iz = np.array(gp_gr), np.array(gp_ri), np.array(gp_iz)
+        gp_gr_err, gp_ri_err, gp_iz_err = np.array(gp_gr_err), np.array(gp_ri_err), np.array(gp_iz_err)
+
+        fig, ax = plt.subplots(3, figsize=(9, 16), sharex=True)
+        ax[0].plot(real_ts, real_gr, c='r', ls='-', label='Real')
+        ax[0].fill_between(real_ts, real_gr - real_gr_err, real_gr + real_gr_err, color='r', alpha=0.3)
+        ax[0].plot(gp_ts, gp_gr, c='b', ls='--', label='Generated')
+        ax[0].fill_between(gp_ts, gp_gr - gp_gr_err, gp_gr + gp_gr_err, color='b', alpha=0.3)
+        ax[1].plot(real_ts, real_ri, c='r', ls='-', label='Real')
+        ax[1].fill_between(real_ts, real_ri - real_ri_err, real_ri + real_ri_err, color='r', alpha=0.3)
+        ax[1].plot(gp_ts, gp_ri, c='b', ls='--', label='Generated')
+        ax[1].fill_between(gp_ts, gp_ri - gp_ri_err, gp_ri + gp_ri_err, color='b', alpha=0.3)
+        ax[2].plot(real_ts, real_iz, c='r', ls='-', label='Real')
+        ax[2].fill_between(real_ts, real_iz - real_iz_err, real_iz + real_iz_err, color='r', alpha=0.3)
+        ax[2].plot(gp_ts, gp_iz, c='b', ls='--', label='Generated')
+        ax[2].fill_between(gp_ts, gp_iz - gp_iz_err, gp_iz + gp_iz_err, color='b', alpha=0.3)
+        ax[0].legend()
+        ax[2].set_xlabel('Phase')
+        ax[0].set_ylabel(f'$g-r$')
+        ax[1].set_ylabel(f'$r-i$')
+        ax[2].set_ylabel(f'$i-z$')
+        plt.subplots_adjust(hspace=0, wspace=0)
+        plt.savefig(os.path.join(self.plot_root, 'Summary_Plots', str(epoch), f'colour_curves.png'), bbox_inches='tight')
+        plt.show()
+
+        t_step = 5
+        fig, axs = plt.subplots(2, 2, figsize=(12, 8), sharex=True, sharey=True)
+        fig2, axs2 = plt.subplots(2, 2, figsize=(12, 8), sharex=True, sharey=True)
+        for f_ind, f in enumerate(['g', 'r', 'i', 'z']):
+            ax, ax2 = axs.flatten()[f_ind], axs2.flatten()[f_ind]
+            ts, mags, mag_errs, scale_mags, scale_mag_errs = [], [], [], [], []
+            for t_low in np.arange(real_scaled_df[f'{f}_t'].min(), real_scaled_df[f'{f}_t'].max(), t_step):
+                t_up = t_low + t_step
+                tdf = real_df[(real_df[f'{f}_t'] > t_low) & (real_df[f'{f}_t'] < t_up)]
+                scale_tdf = real_scaled_df[(real_scaled_df[f'{f}_t'] > t_low) & (real_scaled_df[f'{f}_t'] < t_up)]
+                ts.append(tdf[f'{f}_t'].mean())
+                mags.append(tdf[f].mean())
+                mag_errs.append(tdf[f].std())
+                scale_mags.append(scale_tdf[f].mean())
+                scale_mag_errs.append(scale_tdf[f].std())
+            ts, mags, mag_errs, scale_mags, scale_mag_errs = np.array(ts), np.array(mags), np.array(mag_errs), \
+                                                             np.array(scale_mags), np.array(scale_mag_errs)
+            ax.plot(ts, mags, c='r', ls='-', label='Real')
+            ax.fill_between(ts, mags - mag_errs, mags + mag_errs, color='r', alpha=0.3)
+            ax2.plot(ts, scale_mags, c='r', ls='-', label='Real')
+            ax2.fill_between(ts, scale_mags - scale_mag_errs, scale_mags + scale_mag_errs, color='r', alpha=0.3)
+                            # hatch='/', facecolor='none', edgecolor='r')
+            ax, ax2 = axs.flatten()[f_ind], axs2.flatten()[f_ind]
+            ts, mags, mag_errs, scale_mags, scale_mag_errs = [], [], [], [], []
+            for t_low in np.arange(real_scaled_df[f'{f}_t'].min(), real_scaled_df[f'{f}_t'].max(), t_step):
+                t_up = t_low + t_step
+                tdf = gen_df[(gen_df[f'{f}_t'] > t_low) & (gen_df[f'{f}_t'] < t_up)]
+                scale_tdf = gen_scaled_df[(gen_scaled_df[f'{f}_t'] > t_low) & (gen_scaled_df[f'{f}_t'] < t_up)]
+                ts.append(tdf[f'{f}_t'].mean())
+                mags.append(tdf[f].mean())
+                mag_errs.append(tdf[f].std())
+                scale_mags.append(scale_tdf[f].mean())
+                scale_mag_errs.append(scale_tdf[f].std())
+            ts, mags, mag_errs, scale_mags, scale_mag_errs = np.array(ts), np.array(mags), np.array(mag_errs), \
+                                                             np.array(scale_mags), np.array(scale_mag_errs)
+            ax.plot(ts, mags, c='b', ls='--', label='Generated')
+            ax.fill_between(ts, mags - mag_errs, mags + mag_errs, color='b', alpha=0.3)
+            ax2.plot(ts, scale_mags, c='b', ls='--', label='Generated')
+            ax2.fill_between(ts, scale_mags - scale_mag_errs, scale_mags + scale_mag_errs, color='b', alpha=0.3)
+                            # hatch='x', facecolor="none", edgecolor='b')
+            ax.annotate(f, (0.03, 0.9), xycoords='axes fraction')
+        ax.invert_yaxis()
+        ax2.invert_yaxis()
+        axs[1, 0].legend(loc='lower right')
+        axs[1, 0].set_xlabel('Phase')
+        axs[1, 1].set_xlabel('Phase')
+        ax0 = fig.add_subplot(111, frameon=False)
+        ax0.tick_params(axis='both', which='both', left=False, right=False, bottom=False, top=False,
+                        labelbottom=False, labelleft=False, labeltop=False)
+        ax0.set_ylabel('Apparent magnitude', labelpad=40)
+        axs2[1, 0].legend(loc='lower right')
+        axs2[1, 0].set_xlabel('Phase')
+        axs2[1, 1].set_xlabel('Phase')
+        ax0 = fig2.add_subplot(111, frameon=False)
+        ax0.tick_params(axis='both', which='both', left=False, right=False, bottom=False, top=False,
+                        labelbottom=False, labelleft=False, labeltop=False)
+        ax0.set_ylabel('Magnitude shift', labelpad=40)
+        plt.figure(1)
+        plt.subplots_adjust(hspace=0, wspace=0)
+        plt.savefig(os.path.join(self.plot_root, 'Summary_Plots', str(epoch), f'mean_lcs.png'),
+                    bbox_inches='tight')
+        plt.figure(2)
+        plt.subplots_adjust(hspace=0, wspace=0)
+        plt.savefig(os.path.join(self.plot_root, 'Summary_Plots', str(epoch), f'mean_lcs_shift.png'),
+                    bbox_inches='tight')
+
+        fig, axs = plt.subplots(2, 2, figsize=(12, 8), sharex=True, sharey=True)
+        for f_ind, f in enumerate(['g', 'r', 'i', 'z']):
+            ax = axs.flatten()[f_ind]
+            ax.scatter(real_df[f], real_df[f'{f}_err'], marker='X', c='w', edgecolors='r', s=10, label='Real')
+            ax.scatter(gen_df[f], gen_df[f'{f}_err'], marker='o', c='w', edgecolors='b', s=10, label='Generated')
+            ax.annotate(f, (0.03, 0.9), xycoords='axes fraction')
+        axs[0, 0].legend()
+        ax0 = fig.add_subplot(111, frameon=False)
+        ax0.tick_params(axis='both', which='both', left=False, right=False, bottom=False, top=False,
+                        labelbottom=False, labelleft=False, labeltop=False)
+        ax0.set_ylabel('Magnitude Error', labelpad=40)
+        axs[1, 0].set_xlabel('Apparent Magnitude')
+        axs[1, 1].set_xlabel('Apparent Magnitude')
+        plt.subplots_adjust(hspace=0, wspace=0)
+        plt.savefig(os.path.join(self.plot_root, 'Summary_Plots', str(epoch), f'mag_vs_error.png'),
+                    bbox_inches='tight')
+
+        fig, axs = plt.subplots(2, 2, figsize=(12, 8), sharex=True, sharey=True)
+        for f_ind, f in enumerate(['g', 'r', 'i', 'z']):
+            ax = axs.flatten()[f_ind]
+            real_diffs = np.diff(real_df[f'{f}_t'].values, axis=0)
+            real_diffs = real_diffs[real_diffs > 0]
+            gen_diffs = np.diff(gen_df[f'{f}_t'].values, axis=0)
+            gen_diffs = gen_diffs[gen_diffs > 0]
+            min, max = np.min(np.r_[real_diffs, gen_diffs]), np.max(np.r_[real_diffs, gen_diffs])
+            day_step = 1
+            bins = np.arange(min, max + day_step, day_step)
+            ax.hist(real_diffs, bins=bins, density=True, histtype='step', color='r', ls='-', label='Real')
+            ax.hist(gen_diffs, bins=bins, density=True, histtype='step', color='b', ls='--', label='Generated')
+            ax.annotate(f, (0.03, 0.9), xycoords='axes fraction')
+        axs[0, 0].legend()
+        ax0 = fig.add_subplot(111, frameon=False)
+        ax0.tick_params(axis='both', which='both', left=False, right=False, bottom=False, top=False,
+                        labelbottom=False, labelleft=False, labeltop=False)
+        ax0.set_ylabel('Frequency Density', labelpad=40)
+        axs[1, 0].set_xlabel('Cadence')
+        axs[1, 1].set_xlabel('Cadence')
+        plt.subplots_adjust(hspace=0, wspace=0)
+        plt.savefig(os.path.join(self.plot_root, 'Summary_Plots', str(epoch), f'candence_hists.png'),
+                    bbox_inches='tight')
+
+        real_df['N'] = np.nan
+        gen_df = gen_df.reset_index()
+        for sn in real_df.sn.unique():
+            sndf = real_df[real_df.sn == sn]
+            N = sndf.shape[0]
+            idx = real_df[real_df.sn == sn].index
+            real_df.loc[idx, 'N'] = N
+        for sn in gen_df.sn.unique():
+            sndf = gen_df[gen_df.sn == sn]
+            N = sndf.shape[0]
+            idx = gen_df[gen_df.sn == sn].index
+            gen_df.loc[idx, 'N'] = N
+        Ns = np.sort(np.r_[real_df.N.unique(), gen_df.N.unique()])
+        real_cadence_means = {f: [] for f in ['g', 'r', 'i', 'z']}
+        real_cadence_errs = {f: [] for f in ['g', 'r', 'i', 'z']}
+        gen_cadence_means = {f: [] for f in ['g', 'r', 'i', 'z']}
+        gen_cadence_errs = {f: [] for f in ['g', 'r', 'i', 'z']}
+        for N in Ns:
+            rNdf = real_df[real_df.N == N]
+            gNdf = gen_df[gen_df.N == N]
+            for f_ind, f in enumerate(['g', 'r', 'i', 'z']):
+                rNdiff = np.diff(rNdf[f'{f}_t'].values, axis=0)
+                rNdiff = rNdiff[rNdiff > 0]
+                real_cadence_means[f].append(np.mean(rNdiff))
+                real_cadence_errs[f].append(np.std(rNdiff))
+                gNdiff = np.diff(gNdf[f'{f}_t'].values, axis=0)
+                gNdiff = gNdiff[gNdiff > 0]
+                gen_cadence_means[f].append(np.mean(gNdiff))
+                gen_cadence_errs[f].append(np.std(gNdiff))
+
+        fig, axs = plt.subplots(2, 2, figsize=(12, 8), sharex=True, sharey=True)
+        for f_ind, f in enumerate(['g', 'r', 'i', 'z']):
+            ax = axs.flatten()[f_ind]
+            ax.errorbar(np.array(Ns) - 0.1, real_cadence_means[f], yerr=real_cadence_errs[f], fmt='X', color='r',
+                        label='Real')
+            ax.errorbar(np.array(Ns) + 0.1, gen_cadence_means[f], yerr=gen_cadence_errs[f], fmt='o', color='b',
+                        label='Generated')
+        axs[0, 0].legend()
+        ax0 = fig.add_subplot(111, frameon=False)
+        ax0.tick_params(axis='both', which='both', left=False, right=False, bottom=False, top=False,
+                        labelbottom=False, labelleft=False, labeltop=False)
+        ax0.set_ylabel('Cadence', labelpad=40)
+        axs[1, 0].set_xlabel('N')
+        axs[1, 1].set_xlabel('N')
+        plt.subplots_adjust(hspace=0, wspace=0)
+        plt.savefig(os.path.join(self.plot_root, 'Summary_Plots', str(epoch), f'candence_vs_N.png'),
+                    bbox_inches='tight')
+
+        plt.show()
+
