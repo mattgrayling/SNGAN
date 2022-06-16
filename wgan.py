@@ -33,7 +33,7 @@ import time
 plt.rcParams.update({'font.size': 26})
 pd.options.mode.chained_assignment = None
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "2"
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 
 
 class WGANModel(keras.Model):
@@ -641,6 +641,8 @@ class WGAN:
             fake = np.ones((batch_size, 1))
             self.train_df.to_csv('input_data.csv')
 
+            epoch_g_losses, epoch_d_losses = [], []
+
             for epoch in range(current_epoch, epochs):
                 rng.shuffle(sne)
                 g_losses, d_losses, real_predictions, fake_predictions = [], [], [], []
@@ -994,7 +996,7 @@ class WGAN:
                 # raise ValueError('Nope')
                 # break
 
-    def sample_analysis(self, n=1, epoch=1000, plot_lcs=False, name_suffix=None):
+    def sample_analysis(self, n=1, epoch=1000, plot_lcs=False, name_suffix=None, file_format='png'):
         if name_suffix is not None:
             self.plot_root = self.plot_root + f'_{name_suffix}'
             self.wgan_dir = os.path.join(os.path.split(self.wgan_dir)[0] + f'_{name_suffix}', 'model_weights')
@@ -1284,7 +1286,7 @@ class WGAN:
             ax[1].set_ylim([0, 1.19])
             plt.subplots_adjust(hspace=0, wspace=0)
             fig.align_ylabels()
-            plt.savefig(os.path.join(self.plot_root, 'Summary_Plots', str(epoch), f'{key}.png'), bbox_inches='tight')
+            plt.savefig(os.path.join(self.plot_root, 'Summary_Plots', str(epoch), f'{key}.{file_format}'), bbox_inches='tight')
             plt.show()
 
         t_step = 0.5
@@ -1346,8 +1348,8 @@ class WGAN:
         ax[1].set_ylabel(f'$r-i$')
         ax[2].set_ylabel(f'$i-z$')
         plt.subplots_adjust(hspace=0, wspace=0)
-        plt.savefig(os.path.join(self.plot_root, 'Summary_Plots', str(epoch), f'colour_curves.png'), bbox_inches='tight')
-        plt.show()
+        plt.savefig(os.path.join(self.plot_root, 'Summary_Plots', str(epoch), f'colour_curves.{file_format}'),
+                    bbox_inches='tight')
 
         t_step = 5
         fig, axs = plt.subplots(2, 2, figsize=(12, 8), sharex=True, sharey=True)
@@ -1408,11 +1410,11 @@ class WGAN:
         ax0.set_ylabel('Magnitude shift', labelpad=40)
         plt.figure(1)
         plt.subplots_adjust(hspace=0, wspace=0)
-        plt.savefig(os.path.join(self.plot_root, 'Summary_Plots', str(epoch), f'mean_lcs.png'),
+        plt.savefig(os.path.join(self.plot_root, 'Summary_Plots', str(epoch), f'mean_lcs.{file_format}'),
                     bbox_inches='tight')
         plt.figure(2)
         plt.subplots_adjust(hspace=0, wspace=0)
-        plt.savefig(os.path.join(self.plot_root, 'Summary_Plots', str(epoch), f'mean_lcs_shift.png'),
+        plt.savefig(os.path.join(self.plot_root, 'Summary_Plots', str(epoch), f'mean_lcs_shift.{file_format}'),
                     bbox_inches='tight')
 
         fig, axs = plt.subplots(2, 2, figsize=(12, 8), sharex=True, sharey=True)
@@ -1429,7 +1431,7 @@ class WGAN:
         axs[1, 0].set_xlabel('Apparent Magnitude')
         axs[1, 1].set_xlabel('Apparent Magnitude')
         plt.subplots_adjust(hspace=0, wspace=0)
-        plt.savefig(os.path.join(self.plot_root, 'Summary_Plots', str(epoch), f'mag_vs_error.png'),
+        plt.savefig(os.path.join(self.plot_root, 'Summary_Plots', str(epoch), f'mag_vs_error.{file_format}'),
                     bbox_inches='tight')
 
         fig, axs = plt.subplots(2, 2, figsize=(12, 8), sharex=True, sharey=True)
@@ -1453,7 +1455,7 @@ class WGAN:
         axs[1, 0].set_xlabel('Cadence')
         axs[1, 1].set_xlabel('Cadence')
         plt.subplots_adjust(hspace=0, wspace=0)
-        plt.savefig(os.path.join(self.plot_root, 'Summary_Plots', str(epoch), f'candence_hists.png'),
+        plt.savefig(os.path.join(self.plot_root, 'Summary_Plots', str(epoch), f'candence_hists.{file_format}'),
                     bbox_inches='tight')
 
         real_df['N'] = np.nan
@@ -1501,8 +1503,62 @@ class WGAN:
         axs[1, 0].set_xlabel('N')
         axs[1, 1].set_xlabel('N')
         plt.subplots_adjust(hspace=0, wspace=0)
-        plt.savefig(os.path.join(self.plot_root, 'Summary_Plots', str(epoch), f'candence_vs_N.png'),
+        plt.savefig(os.path.join(self.plot_root, 'Summary_Plots', str(epoch), f'candence_vs_N.{file_format}'),
                     bbox_inches='tight')
 
         plt.show()
+
+    def lc_plot(self, col, row, scale=4, epoch=1000, timesteps=12):
+        if not os.path.exists(os.path.join(self.plot_root, 'Tile_Plots')):
+            os.mkdir(os.path.join(self.plot_root, 'Tile_Plots'))
+        if not os.path.exists(os.path.join(self.plot_root, 'Tile_Plots', str(epoch))):
+            os.mkdir(os.path.join(self.plot_root, 'Tile_Plots', str(epoch)))
+        n = row * col
+        colour_dict = {'g': 'g', 'r': 'r', 'i': 'b', 'z': 'k'}
+        self.wgan = keras.models.load_model(os.path.join(self.wgan_dir, f'{epoch}.tf'))
+        fig, axs = plt.subplots(row, col, figsize=(scale * col, scale * row))
+        for ind in range(n):
+            ax = axs.flatten()[ind]
+            sn = np.random.choice(self.train_df.sn.unique())
+            sndf = self.train_df[self.train_df.sn == sn]
+            sndf = sndf[['sn', 'g_t', 'r_t', 'i_t', 'z_t', 'g', 'r', 'i', 'z', 'g_err',
+                         'r_err', 'i_err', 'z_err']]
+            if timesteps is None:
+                n_steps = sndf.shape[0]
+            else:
+                n_steps = timesteps
+
+            noise = rand.normal(size=(1, self.latent_dims))
+            noise = np.reshape(noise, (1, 1, self.latent_dims))
+            noise = np.repeat(noise, n_steps, 1)
+            gen_lcs = self.wgan.generator.predict(noise)
+            X = gen_lcs[0, :, :]
+            gen_sndf = pd.DataFrame(X, columns=sndf.columns[1:])
+            # gen_sndf = sndf.copy()
+            gen_sndf[['g_t', 'r_t', 'i_t', 'z_t']] = gen_sndf[['g_t', 'r_t', 'i_t', 'z_t']] * \
+                                                 (self.scaling_factors[1] - self.scaling_factors[0]) + \
+                                                 self.scaling_factors[0]
+            gen_sndf[['g', 'r', 'i', 'z']] = gen_sndf[['g', 'r', 'i', 'z']] * (
+                    self.scaling_factors[3] - self.scaling_factors[2]) + self.scaling_factors[2]
+            gen_sndf[['g_err', 'r_err', 'i_err', 'z_err']] = gen_sndf[['g_err', 'r_err', 'i_err', 'z_err']] * (
+                    self.scaling_factors[3] - self.scaling_factors[2]) * -1
+            t_max = gen_sndf[gen_sndf.g == gen_sndf.g.min()].g_t.values[0]
+            gen_sndf[['g_t', 'r_t', 'i_t', 'z_t']] -= t_max
+            for f_ind, f in enumerate(['g', 'r', 'i', 'z']):
+                ax.errorbar(gen_sndf[f'{f}_t'], gen_sndf[f], yerr=gen_sndf[f'{f}_err'],
+                            color=colour_dict[f], fmt='x', label=f)
+            # if ind >= n - col:
+            #     ax.set_xlabel('Phase')
+            # if ind % col == 0:
+            #     ax.set_ylabel('Apparent Magnitude')
+            ax.invert_yaxis()
+        ax0 = fig.add_subplot(111, frameon=False)
+        ax0.tick_params(axis='both', which='both', left=False, right=False, bottom=False, top=False,
+                        labelbottom=False, labelleft=False, labeltop=False)
+        ax0.set_xlabel('Phase', labelpad=40)
+        ax0.set_ylabel('Apparent Magnitude', labelpad=40)
+        plt.savefig(os.path.join(self.plot_root, 'Tile_Plots', str(epoch), f'{row}x{col}.pdf'),)
+        axs.flatten()[1].legend(bbox_to_anchor=(0.5, 1.35), loc='upper center', ncol=4)
+        plt.show()
+
 
