@@ -7,6 +7,7 @@ import pickle
 import numpy.random as rand
 import matplotlib as mpl
 from matplotlib import rc
+import time
 
 rc('font', **{'family': 'serif', 'serif': ['cmr10']})
 mpl.rcParams['axes.unicode_minus'] = False
@@ -33,7 +34,7 @@ import time
 plt.rcParams.update({'font.size': 26})
 pd.options.mode.chained_assignment = None
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+os.environ["CUDA_VISIBLE_DEVICES"] = "1"
 
 
 class WGANModel(keras.Model):
@@ -1015,18 +1016,23 @@ class WGAN:
         real_gp_df, gen_gp_df = None, None
         real_scaled_df, gen_scaled_df = None, None
         self.wgan = keras.models.load_model(os.path.join(self.wgan_dir, f'{epoch}.tf'))
-        sn_props = ['g_max', 'r_max', 'i_max', 'z_max', 'g15', 'r15', 'i15', 'z15', 'g-r', 'r-i', 'i-z']
+        sn_props = ['g_max', 'r_max', 'i_max', 'z_max', 'g15', 'r15', 'i15', 'z15',
+                    'g_rise', 'r_rise', 'i_rise', 'z_rise', 'g-r', 'r-i', 'i-z']
         real_prop_dict = {key: [] for key in sn_props}
         gen_prop_dict = {key: [] for key in sn_props}
         colour_dict = {'g': 'g', 'r': 'r', 'i': 'b', 'z': 'k'}
-        label_dict = {'g_max': r'Peak $g$-band apparent magnitude',
-                      'r_max': r'Peak $r$-band apparent magnitude',
-                      'i_max': r'Peak $i$-band apparent magnitude',
-                      'z_max': r'Peak $z$-band apparent magnitude',
+        label_dict = {'g_max': r'Peak $m_g$',
+                      'r_max': r'Peak $m_r$',
+                      'i_max': r'Peak $m_i$',
+                      'z_max': r'Peak $m_z$',
                       'g15': r'$\Delta m_{g,15}$',
                       'r15': r'$\Delta m_{r,15}$',
                       'i15': r'$\Delta m_{i,15}$',
                       'z15': r'$\Delta m_{z,15}$',
+                      'g_rise': r'$g$-band rise time',
+                      'r_rise': r'$r$-band rise time',
+                      'i_rise': r'$i$-band rise time',
+                      'z_rise': r'$z$-band rise time',
                       'g-r': r'$g-r$',
                       'r-i': r'$r-i$',
                       'i-z': r'$i-z$'
@@ -1039,6 +1045,10 @@ class WGAN:
                          'r15': 0.1,
                          'i15': 0.1,
                          'z15': 0.1,
+                         'g_rise': 4,
+                         'r_rise': 4,
+                         'i_rise': 4,
+                         'z_rise': 4,
                          'g-r': 0.25,
                          'r-i': 0.25,
                          'i-z': 0.25
@@ -1193,6 +1203,7 @@ class WGAN:
                 if plot_lcs:
                     fig, axs = plt.subplots(2, 2, sharex=True, sharey=True, figsize=(12, 8))
                 stop = 0
+
                 for f_ind, f in enumerate(['g', 'r', 'i', 'z']):
                     max_df = snfitdf[snfitdf[f] == snfitdf[f].min()]
                     if max_df.shape[0] > 1:
@@ -1200,6 +1211,7 @@ class WGAN:
                     max_mag = snfitdf[f].min()
                     m15 = snfitdf[np.around(snfitdf['t'], 1) == np.around(max_df['t'].values[0] + 15, 1)][f] \
                           - max_mag
+                    rise = max_df['t'].values[0] - first_t
                     if plot_lcs:
                         ax = axs.flatten()[f_ind]
                         ax.errorbar(sndf[f'{f}_t'], sndf[f], yerr=sndf[f'{f}_err'], fmt='x', color=colour_dict[f])
@@ -1212,6 +1224,7 @@ class WGAN:
                         ax.legend()
                     if gen:
                         gen_prop_dict[f'{f}_max'].append(snfitdf[f].min())
+                        gen_prop_dict[f'{f}_rise'].append(rise)
                         if not m15.empty:
                             gen_prop_dict[f'{f}15'].append(m15.values[0])
                         else:
@@ -1228,6 +1241,7 @@ class WGAN:
                             gen_prop_dict['i-z'].append(max_colour.values[0])
                     else:
                         real_prop_dict[f'{f}_max'].append(snfitdf[f].min())
+                        real_prop_dict[f'{f}_rise'].append(rise)
                         if not m15.empty:
                             real_prop_dict[f'{f}15'].append(m15.values[0])
                         else:
@@ -1258,7 +1272,46 @@ class WGAN:
                         plt.savefig(os.path.join(self.plot_root, 'Real_Plots', f'{sname}.png'), bbox_inches='tight')
                     plt.close('all')
 
-        for key in real_prop_dict.keys():
+        for param in ['_max', '15', '_rise', 'colour']:
+            if param == 'colour':
+                iter_list = ['g-r', 'r-i', 'i-z']
+            else:
+                iter_list = [f'{f}{param}' for f in ['g', 'r', 'i', 'z']]
+            fig, ax = plt.subplots(2, len(iter_list), figsize=(18, 12), sharex='col', sharey='row')
+            for ind, key in enumerate(iter_list):
+                bin_step = bin_step_dict[key]
+                all_vals = np.array(real_prop_dict[key] + gen_prop_dict[key])
+                low = np.floor(np.nanmin(all_vals) * (1 / bin_step)) / (1 / bin_step)
+                up = np.ceil(np.nanmax(all_vals) * (1 / bin_step)) / (1 / bin_step)
+                bins = np.arange(low, up + bin_step, bin_step)
+                # Plot histograms
+                ax[0, ind].hist(real_prop_dict[key], bins=bins, density=True, histtype='step', color='r', ls='-',
+                           label='Real')
+                ax[0, ind].hist(gen_prop_dict[key], bins=bins, density=True, histtype='step', color='b', ls='--',
+                           label='Generated')
+                # Plot CDFs
+                real_data = np.array(real_prop_dict[key])
+                real_data = real_data[~np.isnan(real_data)]
+                real_data = np.sort(real_data)
+                gen_data = np.array(gen_prop_dict[key])
+                gen_data = gen_data[~np.isnan(gen_data)]
+                gen_data = np.sort(gen_data)
+                ks = stats.ks_2samp(real_data, gen_data)
+                ax[1, ind].plot(real_data, np.arange(1, real_data.shape[0] + 1) / real_data.shape[0], c='r', ls='-')
+                ax[1, ind].plot(gen_data, np.arange(1, gen_data.shape[0] + 1) / gen_data.shape[0], c='b', ls='--')
+                ax[1, ind].set_xlabel(label_dict[key])
+                ax[1, ind].set_ylim([0, 1.19])
+            ax[0, 0].legend()
+            ax[0, 0].set_ylabel('Frequency Density')
+            ax[1, 0].set_ylabel('Cumulative Frequency Density')
+            plt.subplots_adjust(hspace=0, wspace=0)
+            fig.align_ylabels()
+            plt.savefig(os.path.join(self.plot_root, 'Summary_Plots', str(epoch), f'all{param}.{file_format}'),
+                        bbox_inches='tight')
+        plt.show()
+        '''for key in real_prop_dict.keys():
+            print(key)
+            continue
             fig, ax = plt.subplots(2, figsize=(10, 14), sharex=True)
             bin_step = bin_step_dict[key]
             all_vals = np.array(real_prop_dict[key] + gen_prop_dict[key])
@@ -1287,8 +1340,7 @@ class WGAN:
             plt.subplots_adjust(hspace=0, wspace=0)
             fig.align_ylabels()
             plt.savefig(os.path.join(self.plot_root, 'Summary_Plots', str(epoch), f'{key}.{file_format}'), bbox_inches='tight')
-            plt.show()
-
+            plt.show()'''
         t_step = 0.5
 
         real_ts = []
@@ -1350,6 +1402,7 @@ class WGAN:
         plt.subplots_adjust(hspace=0, wspace=0)
         plt.savefig(os.path.join(self.plot_root, 'Summary_Plots', str(epoch), f'colour_curves.{file_format}'),
                     bbox_inches='tight')
+        plt.show()
 
         t_step = 5
         fig, axs = plt.subplots(2, 2, figsize=(12, 8), sharex=True, sharey=True)
@@ -1557,8 +1610,20 @@ class WGAN:
                         labelbottom=False, labelleft=False, labeltop=False)
         ax0.set_xlabel('Phase', labelpad=40)
         ax0.set_ylabel('Apparent Magnitude', labelpad=40)
-        plt.savefig(os.path.join(self.plot_root, 'Tile_Plots', str(epoch), f'{row}x{col}.pdf'),)
         axs.flatten()[1].legend(bbox_to_anchor=(0.5, 1.35), loc='upper center', ncol=4)
+        plt.savefig(os.path.join(self.plot_root, 'Tile_Plots', str(epoch), f'{row}x{col}.pdf'), bbox_inches='tight')
         plt.show()
+
+    def timing(self, N=10000, epoch=1000, timesteps=15):
+        self.wgan = keras.models.load_model(os.path.join(self.wgan_dir, f'{epoch}.tf'))
+        print('Starting generation...')
+        t1 = time.time()
+        noise = rand.normal(size=(N, self.latent_dims))
+        noise = np.reshape(noise, (N, 1, self.latent_dims))
+        noise = np.repeat(noise, timesteps, 1)
+        gen_lcs = self.wgan.generator.predict(noise)
+        t2 = time.time()
+        time_elapsed = t2 - t1
+        print(f'Time to generate {N} light curves with {timesteps} time steps: {time_elapsed} seconds')
 
 
