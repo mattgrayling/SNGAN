@@ -652,9 +652,6 @@ class WGAN:
                     # Select real data
                     sn = sne[batch]
                     sndf = self.train_df[self.train_df.sn == sn]
-                    sndf[['g_t', 'r_t', 'i_t', 'z_t']] = 2 * (sndf[['g_t', 'r_t', 'i_t', 'z_t']] - 0.5)
-                    sndf[['g', 'r', 'i', 'z']] = 2 * (sndf[['g', 'r', 'i', 'z']] - 0.5)
-                    sndf[['g_err', 'r_err', 'i_err', 'z_err']] = 2 * sndf[['g_err', 'r_err', 'i_err', 'z_err']]
                     if self.mode == 'observed' and not self.inc_colour:
                         if self.ds == 1:
                             X = sndf[['g_t', 'r_t', 'i_t', 'z_t', 'g', 'r', 'i', 'z', 'g_err',
