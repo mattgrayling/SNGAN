@@ -1141,6 +1141,10 @@ class WGAN:
                     snfitdf[f] = mu
                     snfitdf[f'{f}_err'] = std
 
+                sndf[['g_t', 'r_t', 'i_t', 'z_t']] = (sndf[['g_t', 'r_t', 'i_t', 'z_t']] + 1) / 2
+                sndf[['g', 'r', 'i', 'z']] = (sndf[['g', 'r', 'i', 'z']] + 1) / 2
+                sndf[['g_err', 'r_err', 'i_err', 'z_err']] = sndf[['g_err', 'r_err', 'i_err', 'z_err']] / 2
+
                 sndf[['g_t', 'r_t', 'i_t', 'z_t']] = sndf[['g_t', 'r_t', 'i_t', 'z_t']] * \
                                                      (self.scaling_factors[1] - self.scaling_factors[0]) + \
                                                      self.scaling_factors[0]
