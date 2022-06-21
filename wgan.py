@@ -548,13 +548,13 @@ class WGAN:
                 output = GRU(self.n_output, return_sequences=True, activation='tanh')(dr3)
                 model = Model(input, output)
             else:
-                gru1 = GRU(self.gen_units, activation='tanh', return_sequences=True)(input)
+                gru1 = GRU(self.gen_units, activation='relu', return_sequences=True)(input)
                 dr1 = Dropout(self.g_dropout)(gru1)
-                gru2 = GRU(self.gen_units, activation='tanh', return_sequences=True)(dr1)
+                gru2 = GRU(self.gen_units, activation='relu', return_sequences=True)(dr1)
                 dr2 = Dropout(self.g_dropout)(gru2)
-                gru3 = GRU(int(self.gen_units / 4), activation='tanh', return_sequences=True)(dr2)
+                gru3 = GRU(int(self.gen_units / 4), activation='relu', return_sequences=True)(dr2)
                 dr3 = Dropout(self.g_dropout)(gru3)
-                output = GRU(self.n_output, return_sequences=True, activation='tanh')(dr2)
+                output = GRU(self.n_output, return_sequences=True, activation='sigmoid')(dr2)
                 model = Model(input, output)
             return model
 
