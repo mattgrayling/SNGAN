@@ -34,7 +34,7 @@ import time
 plt.rcParams.update({'font.size': 26})
 pd.options.mode.chained_assignment = None
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+os.environ["CUDA_VISIBLE_DEVICES"] = "3"
 
 
 class WGANModel(keras.Model):
@@ -1121,6 +1121,11 @@ class WGAN:
 
                 snfitdf = pd.DataFrame(fit_t, columns=['t'])
 
+                if gen:
+                    sndf[['g_t', 'r_t', 'i_t', 'z_t']] = (sndf[['g_t', 'r_t', 'i_t', 'z_t']] + 1) / 2
+                    sndf[['g', 'r', 'i', 'z']] = (sndf[['g', 'r', 'i', 'z']] + 1) / 2
+                    sndf[['g_err', 'r_err', 'i_err', 'z_err']] = sndf[['g_err', 'r_err', 'i_err', 'z_err']] / 2
+
                 for f in ['g', 'r', 'i', 'z']:
                     gp = george.GP(Matern32Kernel(1))
                     t, y, y_err = sndf[f'{f}_t'], sndf[f], sndf[f'{f}_err']
@@ -1140,10 +1145,6 @@ class WGAN:
                     std = np.sqrt(np.diag(cov))
                     snfitdf[f] = mu
                     snfitdf[f'{f}_err'] = std
-
-                sndf[['g_t', 'r_t', 'i_t', 'z_t']] = (sndf[['g_t', 'r_t', 'i_t', 'z_t']] + 1) / 2
-                sndf[['g', 'r', 'i', 'z']] = (sndf[['g', 'r', 'i', 'z']] + 1) / 2
-                sndf[['g_err', 'r_err', 'i_err', 'z_err']] = sndf[['g_err', 'r_err', 'i_err', 'z_err']] / 2
 
                 sndf[['g_t', 'r_t', 'i_t', 'z_t']] = sndf[['g_t', 'r_t', 'i_t', 'z_t']] * \
                                                      (self.scaling_factors[1] - self.scaling_factors[0]) + \
