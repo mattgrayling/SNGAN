@@ -34,7 +34,7 @@ import time
 plt.rcParams.update({'font.size': 26})
 pd.options.mode.chained_assignment = None
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "1"
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 
 
 class WGANModel(keras.Model):
@@ -548,13 +548,13 @@ class WGAN:
                 output = GRU(self.n_output, return_sequences=True, activation='tanh')(dr3)
                 model = Model(input, output)
             else:
-                gru1 = GRU(self.gen_units, activation='relu', return_sequences=True)(input)
+                gru1 = GRU(self.gen_units, activation='tanh', return_sequences=True)(input)
                 dr1 = Dropout(self.g_dropout)(gru1)
-                gru2 = GRU(self.gen_units, activation='relu', return_sequences=True)(dr1)
+                gru2 = GRU(self.gen_units, activation='tanh', return_sequences=True)(dr1)
                 dr2 = Dropout(self.g_dropout)(gru2)
-                gru3 = GRU(int(self.gen_units / 4), activation='relu', return_sequences=True)(dr2)
+                gru3 = GRU(int(self.gen_units / 4), activation='tanh', return_sequences=True)(dr2)
                 dr3 = Dropout(self.g_dropout)(gru3)
-                output = GRU(self.n_output, return_sequences=True, activation='sigmoid')(dr2)
+                output = GRU(self.n_output, return_sequences=True, activation='tanh')(dr2)
                 model = Model(input, output)
             return model
 
@@ -652,6 +652,9 @@ class WGAN:
                     # Select real data
                     sn = sne[batch]
                     sndf = self.train_df[self.train_df.sn == sn]
+                    sndf[['g_t', 'r_t', 'i_t', 'z_t']] = 2 * (sndf[['g_t', 'r_t', 'i_t', 'z_t']] - 0.5)
+                    sndf[['g', 'r', 'i', 'z']] = 2 * (sndf[['g', 'r', 'i', 'z']] - 0.5)
+                    sndf[['g_err', 'r_err', 'i_err', 'z_err']] = 2 * sndf[['g_err', 'r_err', 'i_err', 'z_err']]
                     if self.mode == 'observed' and not self.inc_colour:
                         if self.ds == 1:
                             X = sndf[['g_t', 'r_t', 'i_t', 'z_t', 'g', 'r', 'i', 'z', 'g_err',
