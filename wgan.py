@@ -1114,17 +1114,17 @@ class WGAN:
             for sname in full_sndf.sn.unique():
                 sndf = full_sndf[full_sndf.sn == sname]
                 gen = True if 'gen' in str(sname) else False
-                all_t = np.r_[sndf.g_t.values, sndf.r_t.values, sndf.i_t.values, sndf.z_t.values]
-                day_step = 0.1
-                t_step = day_step / (self.scaling_factors[1] - self.scaling_factors[0])
-                fit_t = np.arange(all_t.min(), all_t.max(), t_step)
-
-                snfitdf = pd.DataFrame(fit_t, columns=['t'])
 
                 if gen:
                     sndf[['g_t', 'r_t', 'i_t', 'z_t']] = (sndf[['g_t', 'r_t', 'i_t', 'z_t']] + 1) / 2
                     sndf[['g', 'r', 'i', 'z']] = (sndf[['g', 'r', 'i', 'z']] + 1) / 2
                     sndf[['g_err', 'r_err', 'i_err', 'z_err']] = sndf[['g_err', 'r_err', 'i_err', 'z_err']] / 2
+
+                all_t = np.r_[sndf.g_t.values, sndf.r_t.values, sndf.i_t.values, sndf.z_t.values]
+                day_step = 0.1
+                t_step = day_step / (self.scaling_factors[1] - self.scaling_factors[0])
+                fit_t = np.arange(all_t.min(), all_t.max(), t_step)
+                snfitdf = pd.DataFrame(fit_t, columns=['t'])
 
                 for f in ['g', 'r', 'i', 'z']:
                     gp = george.GP(Matern32Kernel(1))
@@ -1162,6 +1162,9 @@ class WGAN:
 
                 maxes = [snfitdf[snfitdf[f] == snfitdf[f].min()]['t'].values[0] for f in ['g', 'r', 'i', 'z']]
                 tmax = np.min(maxes)
+                first_max = [np.argmin(snfitdf[f].values) for f in ['g', 'r', 'i', 'z']]
+                if 0 in first_max:
+                    continue
                 # tmax = snfitdf[snfitdf.g == snfitdf.g.min()]['t'].values[0]  # Just for g-band
 
                 first_t = np.min(sndf[['g_t', 'r_t', 'i_t', 'z_t']].values.flatten())
@@ -1436,7 +1439,7 @@ class WGAN:
                             # hatch='/', facecolor='none', edgecolor='r')
             ax, ax2 = axs.flatten()[f_ind], axs2.flatten()[f_ind]
             ts, mags, mag_errs, scale_mags, scale_mag_errs = [], [], [], [], []
-            for t_low in np.arange(real_scaled_df[f'{f}_t'].min(), real_scaled_df[f'{f}_t'].max(), t_step):
+            for t_low in np.arange(gen_scaled_df[f'{f}_t'].min(), gen_scaled_df[f'{f}_t'].max(), t_step):
                 t_up = t_low + t_step
                 tdf = gen_df[(gen_df[f'{f}_t'] > t_low) & (gen_df[f'{f}_t'] < t_up)]
                 scale_tdf = gen_scaled_df[(gen_scaled_df[f'{f}_t'] > t_low) & (gen_scaled_df[f'{f}_t'] < t_up)]
