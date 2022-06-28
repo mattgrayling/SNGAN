@@ -202,6 +202,7 @@ class WGAN:
         self.c_dropout = c_dropout
         self.gen_units = gen_units
         self.crit_units = crit_units
+        self.sn_type = sn_type
         # WGAN Paper guidance-----------------------------
         self.n_critic = n_critic
         self.c_optimizer = opt.Adam(lr=self.clr, beta_1=0.5, beta_2=0.9)
@@ -231,10 +232,10 @@ class WGAN:
         else:
             self.n_output = 5
         if self.gp_weight > 1:
-            self.name = f'WGAN_DES_sim_{sn_type}_CCSNe_{self.mode}_clr{self.clr}_glr{self.glr}_ld{self.latent_dims}' \
-                    f'_GP{self.GP}_zlim{self.z_lim}_bn{self.batch_norm}_gN{self.gen_units}_cN{self.crit_units}' \
-                    f'_gd{self.g_dropout}_cd{self.c_dropout}_ds{self.ds}_colour{self.inc_colour}' \
-                    f'_ncrit{self.n_critic}_gpw{self.gp_weight}'
+            self.name = f'WGAN_DES_sim_{self.sn_type}_CCSNe_{self.mode}_clr{self.clr}_glr{self.glr}_ld{self.latent_dims}' \
+                        f'_GP{self.GP}_zlim{self.z_lim}_bn{self.batch_norm}_gN{self.gen_units}_cN{self.crit_units}' \
+                        f'_gd{self.g_dropout}_cd{self.c_dropout}_ds{self.ds}_colour{self.inc_colour}' \
+                        f'_ncrit{self.n_critic}_gpw{self.gp_weight}'
         else:
             self.name = f'WGAN_DES_sim_{sn_type}_CCSNe_{self.mode}_clr{self.clr}_glr{self.glr}_ld{self.latent_dims}' \
                         f'_GP{self.GP}_zlim{self.z_lim}_bn{self.batch_norm}_gN{self.gen_units}_cN{self.crit_units}' \
@@ -244,20 +245,29 @@ class WGAN:
             os.mkdir(os.path.join('Data', 'Models', 'Weights', self.experiment))
         if not os.path.exists(os.path.join('Data', 'Models', 'Plots', self.experiment)):
             os.mkdir(os.path.join('Data', 'Models', 'Plots', self.experiment))
+        if not os.path.exists(os.path.join('Data', 'Models', 'LCs', self.experiment)):
+            os.mkdir(os.path.join('Data', 'Models', 'LCs', self.experiment))
         if not os.path.exists(os.path.join('Data', 'Models', 'Weights', self.experiment, 'WGAN')):
             os.mkdir(os.path.join('Data', 'Models', 'Weights', self.experiment, 'WGAN'))
         if not os.path.exists(os.path.join('Data', 'Models', 'Plots', self.experiment, 'WGAN')):
             os.mkdir(os.path.join('Data', 'Models', 'Plots', self.experiment, 'WGAN'))
+        if not os.path.exists(os.path.join('Data', 'Models', 'LCs', self.experiment, 'WGAN')):
+            os.mkdir(os.path.join('Data', 'Models', 'LCs', self.experiment, 'WGAN'))
         if not os.path.exists(os.path.join('Data', 'Models', 'Weights', self.experiment, 'WGAN', self.mode)):
             os.mkdir(os.path.join('Data', 'Models', 'Weights', self.experiment, 'WGAN', self.mode))
         if not os.path.exists(os.path.join('Data', 'Models', 'Plots', self.experiment, 'WGAN', self.mode)):
             os.mkdir(os.path.join('Data', 'Models', 'Plots', self.experiment, 'WGAN', self.mode))
+        if not os.path.exists(os.path.join('Data', 'Models', 'LCs', self.experiment, 'WGAN', self.mode)):
+            os.mkdir(os.path.join('Data', 'Models', 'LCs', self.experiment, 'WGAN', self.mode))
         self.weight_root = os.path.join('Data', 'Models', 'Weights', self.experiment, 'WGAN', self.mode, self.name)
         self.plot_root = os.path.join('Data', 'Models', 'Plots', self.experiment, 'WGAN', self.mode, self.name)
+        self.lc_root = os.path.join('Data', 'Models', 'LCs', self.experiment, 'WGAN', self.mode, self.name)
         if not os.path.exists(self.weight_root):
             os.mkdir(self.weight_root)
         if not os.path.exists(self.plot_root):
             os.mkdir(self.plot_root)
+        if not os.path.exists(self.lc_root):
+            os.mkdir(self.lc_root)
         self.dataset_name = f'WGAN_DES_sim_{self.mode}_colour{self.inc_colour}_GP{self.GP}_zlim{self.z_lim}'
         self.dataset_path = os.path.join('Data', 'Datasets', f'{self.dataset_name}.csv')
         if os.path.exists(self.dataset_path):
@@ -267,6 +277,21 @@ class WGAN:
         else:
             print('Dataset does not already exist, creating now...')
             self.train_df, self.scaling_factors = self.__prepare_dataset__()
+        if 'scaleerr' in self.experiment:
+            min = np.min(np.r_[self.train_df.g_err, self.train_df.r_err,
+                               self.train_df.i_err, self.train_df.z_err])
+            max = np.max(np.r_[self.train_df.g_err, self.train_df.r_err,
+                               self.train_df.i_err, self.train_df.z_err])
+            self.scaling_factors.append(min)
+            self.scaling_factors.append(max)
+            self.train_df[['g_err', 'r_err', 'i_err', 'z_err']] = (self.train_df[['g_err', 'r_err', 'i_err', 'z_err']]
+                                                                   - min) / (max - min)
+        elif 'err' in self.experiment:
+            self.error_scaling = np.mean(np.r_[self.train_df.g_err, self.train_df.r_err,
+                                               self.train_df.i_err, self.train_df.z_err])
+            self.train_df[['g_err', 'r_err', 'i_err', 'z_err']] -= self.error_scaling
+            # print(self.train_df[['g_err', 'r_err', 'i_err', 'z_err']].describe())
+            # print(self.error_scaling)
         self.train_df = self.train_df[self.train_df.sn_type == self.class_label_encoder[sn_type]]
         print(len(self.train_df.sn.unique()))
         self.wgan_dir = os.path.join(self.weight_root, 'model_weights')
@@ -652,9 +677,15 @@ class WGAN:
                     # Select real data
                     sn = sne[batch]
                     sndf = self.train_df[self.train_df.sn == sn]
-                    sndf[['g_t', 'r_t', 'i_t', 'z_t']] = 2 * (sndf[['g_t', 'r_t', 'i_t', 'z_t']] - 0.5)
-                    sndf[['g', 'r', 'i', 'z']] = 2 * (sndf[['g', 'r', 'i', 'z']] - 0.5)
-                    sndf[['g_err', 'r_err', 'i_err', 'z_err']] = 2 * sndf[['g_err', 'r_err', 'i_err', 'z_err']]
+                    if 'scaleerr' in self.experiment:
+                        sndf[['g_t', 'r_t', 'i_t', 'z_t']] = 2 * (sndf[['g_t', 'r_t', 'i_t', 'z_t']] - 0.5)
+                        sndf[['g', 'r', 'i', 'z']] = 2 * (sndf[['g', 'r', 'i', 'z']] - 0.5)
+                        sndf[['g_err', 'r_err', 'i_err', 'z_err']] = 2 * (sndf[['g_err', 'r_err', 'i_err', 'z_err']]
+                                                                          - 0.5)
+                    else:
+                        sndf[['g_t', 'r_t', 'i_t', 'z_t']] = 2 * (sndf[['g_t', 'r_t', 'i_t', 'z_t']] - 0.5)
+                        sndf[['g', 'r', 'i', 'z']] = 2 * (sndf[['g', 'r', 'i', 'z']] - 0.5)
+                        sndf[['g_err', 'r_err', 'i_err', 'z_err']] = 2 * sndf[['g_err', 'r_err', 'i_err', 'z_err']]
                     if self.mode == 'observed' and not self.inc_colour:
                         if self.ds == 1:
                             X = sndf[['g_t', 'r_t', 'i_t', 'z_t', 'g', 'r', 'i', 'z', 'g_err',
@@ -1058,8 +1089,6 @@ class WGAN:
                          }
         gen_number = 1
         for sn in tqdm(self.train_df.sn.unique(), total=len(self.train_df.sn.unique())):
-            # if len(real_prop_dict['g_max']) > 40:
-            #    continue
             sndf = self.train_df[self.train_df.sn == sn]
             if not self.inc_colour:
                 # Fit for real SN first
@@ -1104,9 +1133,10 @@ class WGAN:
                     gen_sndf['i_t'] = gen_sndf['t'].values
                     gen_sndf['z_t'] = gen_sndf['t'].values
                     gen_sndf = gen_sndf[['g_t', 'r_t', 'i_t', 'z_t', 'g', 'r', 'i', 'z', 'g_err',
-                                 'r_err', 'i_err', 'z_err']]
+                                         'r_err', 'i_err', 'z_err']]
                     gen_sndf[['g', 'r', 'i', 'z']] = 0.5 * gen_sndf[['g', 'r', 'i', 'z']] + 0.5
-                    gen_sndf[['g_err', 'r_err', 'i_err', 'z_err']] = 0.5 * gen_sndf[['g_err', 'r_err', 'i_err', 'z_err']]
+                    gen_sndf[['g_err', 'r_err', 'i_err', 'z_err']] = 0.5 * gen_sndf[
+                        ['g_err', 'r_err', 'i_err', 'z_err']]
                 gen_sndf['sn'] = f'gen_{gen_number}'
                 gen_number += 1
                 full_sndf = pd.concat([full_sndf, gen_sndf])
@@ -1115,11 +1145,25 @@ class WGAN:
                 sndf = full_sndf[full_sndf.sn == sname]
                 gen = True if 'gen' in str(sname) else False
 
-                if gen:
+                if 'scaleerr' in self.experiment:
+                    if gen:
+                        sndf[['g_t', 'r_t', 'i_t', 'z_t']] = (sndf[['g_t', 'r_t', 'i_t', 'z_t']] + 1) / 2
+                        sndf[['g', 'r', 'i', 'z']] = (sndf[['g', 'r', 'i', 'z']] + 1) / 2
+                        sndf[['g_err', 'r_err', 'i_err', 'z_err']] = (sndf[
+                                                                          ['g_err', 'r_err', 'i_err', 'z_err']] + 1) \
+                                                                     / 2
+                    sndf[['g_err', 'r_err', 'i_err', 'z_err']] = sndf[['g_err', 'r_err', 'i_err', 'z_err']] * (
+                            self.scaling_factors[5] - self.scaling_factors[4]) + self.scaling_factors[4]
+                elif 'err' in self.experiment:
+                    if gen:
+                        sndf[['g_t', 'r_t', 'i_t', 'z_t']] = (sndf[['g_t', 'r_t', 'i_t', 'z_t']] + 1) / 2
+                        sndf[['g', 'r', 'i', 'z']] = (sndf[['g', 'r', 'i', 'z']] + 1) / 2
+                        sndf[['g_err', 'r_err', 'i_err', 'z_err']] = sndf[['g_err', 'r_err', 'i_err', 'z_err']] / 2
+                    sndf[['g_err', 'r_err', 'i_err', 'z_err']] += self.error_scaling
+                elif gen and 'sig' not in self.experiment:
                     sndf[['g_t', 'r_t', 'i_t', 'z_t']] = (sndf[['g_t', 'r_t', 'i_t', 'z_t']] + 1) / 2
                     sndf[['g', 'r', 'i', 'z']] = (sndf[['g', 'r', 'i', 'z']] + 1) / 2
                     sndf[['g_err', 'r_err', 'i_err', 'z_err']] = sndf[['g_err', 'r_err', 'i_err', 'z_err']] / 2
-
                 all_t = np.r_[sndf.g_t.values, sndf.r_t.values, sndf.i_t.values, sndf.z_t.values]
                 day_step = 0.1
                 t_step = day_step / (self.scaling_factors[1] - self.scaling_factors[0])
@@ -1297,9 +1341,9 @@ class WGAN:
                 bins = np.arange(low, up + bin_step, bin_step)
                 # Plot histograms
                 ax[0, ind].hist(real_prop_dict[key], bins=bins, density=True, histtype='step', color='r', ls='-',
-                           label='Real')
+                                label='Real')
                 ax[0, ind].hist(gen_prop_dict[key], bins=bins, density=True, histtype='step', color='b', ls='--',
-                           label='Generated')
+                                label='Generated')
                 # Plot CDFs
                 real_data = np.array(real_prop_dict[key])
                 real_data = real_data[~np.isnan(real_data)]
@@ -1368,8 +1412,8 @@ class WGAN:
             real_gr_err.append(tdf['g-r'].std())
             real_ri.append(tdf['r-i'].mean())
             real_ri_err.append(tdf['r-i'].std())
-            real_iz.append(tdf['r-i'].mean())
-            real_iz_err.append(tdf['r-i'].std())
+            real_iz.append(tdf['i-z'].mean())
+            real_iz_err.append(tdf['i-z'].std())
         real_gr, real_ri, real_iz = np.array(real_gr), np.array(real_ri), np.array(real_iz)
         real_gr_err, real_ri_err, real_iz_err = np.array(real_gr_err), np.array(real_ri_err), np.array(real_iz_err)
 
@@ -1387,8 +1431,8 @@ class WGAN:
             gp_gr_err.append(tdf['g-r'].std())
             gp_ri.append(tdf['r-i'].mean())
             gp_ri_err.append(tdf['r-i'].std())
-            gp_iz.append(tdf['r-i'].mean())
-            gp_iz_err.append(tdf['r-i'].std())
+            gp_iz.append(tdf['i-z'].mean())
+            gp_iz_err.append(tdf['i-z'].std())
         gp_gr, gp_ri, gp_iz = np.array(gp_gr), np.array(gp_ri), np.array(gp_iz)
         gp_gr_err, gp_ri_err, gp_iz_err = np.array(gp_gr_err), np.array(gp_ri_err), np.array(gp_iz_err)
 
@@ -1436,7 +1480,7 @@ class WGAN:
             ax.fill_between(ts, mags - mag_errs, mags + mag_errs, color='r', alpha=0.3)
             ax2.plot(ts, scale_mags, c='r', ls='-', label='Real')
             ax2.fill_between(ts, scale_mags - scale_mag_errs, scale_mags + scale_mag_errs, color='r', alpha=0.3)
-                            # hatch='/', facecolor='none', edgecolor='r')
+            # hatch='/', facecolor='none', edgecolor='r')
             ax, ax2 = axs.flatten()[f_ind], axs2.flatten()[f_ind]
             ts, mags, mag_errs, scale_mags, scale_mag_errs = [], [], [], [], []
             for t_low in np.arange(gen_scaled_df[f'{f}_t'].min(), gen_scaled_df[f'{f}_t'].max(), t_step):
@@ -1454,7 +1498,7 @@ class WGAN:
             ax.fill_between(ts, mags - mag_errs, mags + mag_errs, color='b', alpha=0.3)
             ax2.plot(ts, scale_mags, c='b', ls='--', label='Generated')
             ax2.fill_between(ts, scale_mags - scale_mag_errs, scale_mags + scale_mag_errs, color='b', alpha=0.3)
-                            # hatch='x', facecolor="none", edgecolor='b')
+            # hatch='x', facecolor="none", edgecolor='b')
             ax.annotate(f, (0.03, 0.9), xycoords='axes fraction')
         ax.invert_yaxis()
         ax2.invert_yaxis()
@@ -1599,9 +1643,25 @@ class WGAN:
             X = gen_lcs[0, :, :]
             gen_sndf = pd.DataFrame(X, columns=sndf.columns[1:])
             # gen_sndf = sndf.copy()
+            if 'scaleerr' in self.experiment:
+                gen_sndf[['g_t', 'r_t', 'i_t', 'z_t']] = (gen_sndf[['g_t', 'r_t', 'i_t', 'z_t']] + 1) / 2
+                gen_sndf[['g', 'r', 'i', 'z']] = (gen_sndf[['g', 'r', 'i', 'z']] + 1) / 2
+                gen_sndf[['g_err', 'r_err', 'i_err', 'z_err']] = (gen_sndf[['g_err', 'r_err', 'i_err', 'z_err']] + 1) \
+                                                                 / 2
+                gen_sndf[['g_err', 'r_err', 'i_err', 'z_err']] = gen_sndf[['g_err', 'r_err', 'i_err', 'z_err']] * (
+                        self.scaling_factors[5] - self.scaling_factors[4]) + self.scaling_factors[4]
+            elif 'err' in self.experiment:
+                gen_sndf[['g_t', 'r_t', 'i_t', 'z_t']] = (gen_sndf[['g_t', 'r_t', 'i_t', 'z_t']] + 1) / 2
+                gen_sndf[['g', 'r', 'i', 'z']] = (gen_sndf[['g', 'r', 'i', 'z']] + 1) / 2
+                gen_sndf[['g_err', 'r_err', 'i_err', 'z_err']] = gen_sndf[['g_err', 'r_err', 'i_err', 'z_err']] / 2
+                gen_sndf[['g_err', 'r_err', 'i_err', 'z_err']] += self.error_scaling
+            elif 'sig' not in self.experiment:
+                gen_sndf[['g_t', 'r_t', 'i_t', 'z_t']] = (gen_sndf[['g_t', 'r_t', 'i_t', 'z_t']] + 1) / 2
+                gen_sndf[['g', 'r', 'i', 'z']] = (gen_sndf[['g', 'r', 'i', 'z']] + 1) / 2
+                gen_sndf[['g_err', 'r_err', 'i_err', 'z_err']] = gen_sndf[['g_err', 'r_err', 'i_err', 'z_err']] / 2
             gen_sndf[['g_t', 'r_t', 'i_t', 'z_t']] = gen_sndf[['g_t', 'r_t', 'i_t', 'z_t']] * \
-                                                 (self.scaling_factors[1] - self.scaling_factors[0]) + \
-                                                 self.scaling_factors[0]
+                                                     (self.scaling_factors[1] - self.scaling_factors[0]) + \
+                                                     self.scaling_factors[0]
             gen_sndf[['g', 'r', 'i', 'z']] = gen_sndf[['g', 'r', 'i', 'z']] * (
                     self.scaling_factors[3] - self.scaling_factors[2]) + self.scaling_factors[2]
             gen_sndf[['g_err', 'r_err', 'i_err', 'z_err']] = gen_sndf[['g_err', 'r_err', 'i_err', 'z_err']] * (
@@ -1637,4 +1697,58 @@ class WGAN:
         time_elapsed = t2 - t1
         print(f'Time to generate {N} light curves with {timesteps} time steps: {time_elapsed} seconds')
 
-
+    def prepare_snn(self, N=10000, epoch=1000, timesteps=None):
+        if not os.path.exists(os.path.join(self.lc_root, str(epoch))):
+            os.mkdir(os.path.join(self.lc_root, str(epoch)))
+        self.wgan = keras.models.load_model(os.path.join(self.wgan_dir, f'{epoch}.tf'))
+        zp_ab = {'g': 20.802, 'r': 21.436, 'i': 21.866, 'z': 22.214}
+        all_head_df, all_lc_df = None, None
+        print('Generating light curves...')
+        for ind in tqdm(range(N)):
+            sn = np.random.choice(self.train_df.sn.unique())
+            sndf = self.train_df[self.train_df.sn == sn]
+            sndf = sndf[['sn', 'g_t', 'r_t', 'i_t', 'z_t', 'g', 'r', 'i', 'z', 'g_err',
+                         'r_err', 'i_err', 'z_err']]
+            if timesteps is None:
+                n_steps = sndf.shape[0]
+            else:
+                n_steps = timesteps
+            noise = rand.normal(size=(1, self.latent_dims))
+            noise = np.reshape(noise, (1, 1, self.latent_dims))
+            noise = np.repeat(noise, n_steps, 1)
+            gen_lcs = self.wgan.generator.predict(noise)
+            X = gen_lcs[0, :, :]
+            gen_sndf = pd.DataFrame(X, columns=sndf.columns[1:])
+            # gen_sndf = sndf.copy()
+            gen_sndf[['g_t', 'r_t', 'i_t', 'z_t']] = (gen_sndf[['g_t', 'r_t', 'i_t', 'z_t']] + 1) / 2
+            gen_sndf[['g', 'r', 'i', 'z']] = (gen_sndf[['g', 'r', 'i', 'z']] + 1) / 2
+            gen_sndf[['g_err', 'r_err', 'i_err', 'z_err']] = gen_sndf[['g_err', 'r_err', 'i_err', 'z_err']] / 2
+            gen_sndf[['g_t', 'r_t', 'i_t', 'z_t']] = gen_sndf[['g_t', 'r_t', 'i_t', 'z_t']] * \
+                                                     (self.scaling_factors[1] - self.scaling_factors[0]) + \
+                                                     self.scaling_factors[0]
+            gen_sndf[['g', 'r', 'i', 'z']] = gen_sndf[['g', 'r', 'i', 'z']] * (
+                    self.scaling_factors[3] - self.scaling_factors[2]) + self.scaling_factors[2]
+            gen_sndf[['g_err', 'r_err', 'i_err', 'z_err']] = np.abs(gen_sndf[['g_err', 'r_err', 'i_err', 'z_err']] * (
+                    self.scaling_factors[3] - self.scaling_factors[2]))
+            t_max = gen_sndf[gen_sndf.g == gen_sndf.g.min()].g_t.values[0]
+            gen_sndf[['g_t', 'r_t', 'i_t', 'z_t']] -= t_max
+            for f in ['g', 'r', 'i', 'z']:
+                gen_sndf[f] = np.power(10, -(gen_sndf[f] + zp_ab[f]) / 2.5)
+                gen_sndf[f'{f}_err'] = (np.log(10) / 2.5) * gen_sndf[f] * gen_sndf[f'{f}_err']
+            lc_data = []
+            for i, row in gen_sndf.iterrows():
+                for f in ['g', 'r', 'i', 'z']:
+                    lc_data.append([ind, row[f'{f}_t'], row[f], row[f'{f}_err'], f])
+            head_data = [ind, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 7]  # 10, 10, 10, 10, 10, 10, 10, 10, 10, 10,
+            lc_df = pd.DataFrame(lc_data, columns=['SNID', 'MJD', 'FLUXCAL', 'FLUXCALERR', 'FLT'], dtype='str')
+            head_df = pd.DataFrame([head_data], columns=['SNID', 'PEAKMJD', 'HOSTGAL_PHOTOZ', 'HOSTGAL_PHOTOZ_ERR',
+                                                         'HOSTGAL_SPECZ', 'HOSTGAL_SPECZ_ERR', 'SIM_REDSHIFT_CMB',
+                                                         'SIM_PEAKMAG_z', 'SIM_PEAKMAG_g', 'SIM_PEAKMAG_r',
+                                                         'SIM_PEAKMAG_i', 'SNTYPE'], dtype='str')
+            if all_lc_df is None:
+                all_head_df, all_lc_df = head_df.copy(), lc_df.copy()
+            else:
+                all_head_df, all_lc_df = pd.concat([all_head_df, head_df]), pd.concat([all_lc_df, lc_df])
+        all_head_df.to_csv(os.path.join(self.lc_root, str(epoch), 'HEAD.csv'), index=False)
+        print(all_head_df)
+        all_lc_df.to_csv(os.path.join(self.lc_root, str(epoch), 'PHOT.csv'), index=False)
