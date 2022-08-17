@@ -170,7 +170,7 @@ class WGAN:
     def __init__(self, experiment='general', latent_dims=100, clr=0.0005, glr=0.0005, device='gpu:0', GP=True,
                  z_lim=None, batch_norm=False, mode='template', g_dropout=0.5, c_dropout=0.5,
                  gen_units=100, crit_units=100, sn_type='II', ds=1, inc_colour=False, n_critic=1,
-                 gp_weight=1.0):
+                 gp_weight=10):
         """
         :param latent_dims: int, number of latent dimensions to draw random seed for generator from
         :param clr: float, initial learning rate to use for critic
