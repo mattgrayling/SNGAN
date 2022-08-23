@@ -39,7 +39,7 @@ from prdc import compute_prdc
 plt.rcParams.update({'font.size': 26})
 pd.options.mode.chained_assignment = None
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "3"
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 
 
 class WGANModel(keras.Model):
@@ -167,47 +167,35 @@ class WGAN:
     Wasserstein GAN implementation for supernova light curve generation
     """
 
-    def __init__(self, experiment='general', latent_dims=100, clr=0.0005, glr=0.0005, device='gpu:0', GP=True,
-                 z_lim=None, batch_norm=False, mode='template', g_dropout=0.5, c_dropout=0.5,
-                 gen_units=100, crit_units=100, sn_type='II', ds=1, inc_colour=False, n_critic=1,
+    def __init__(self, experiment='general', latent_dims=100, clr=0.0005, glr=0.0005, GP=True,
+                 z_lim=None, g_dropout=0.5, c_dropout=0.5, redshift=False,
+                 gen_units=100, crit_units=100, sn_type='II', n_critic=1,
                  gp_weight=10):
         """
         :param latent_dims: int, number of latent dimensions to draw random seed for generator from
         :param clr: float, initial learning rate to use for critic
         :param glr: float, initial learning rate to use for generator
-        :param device: string, device to use for model training
         :param GP: Boolean, specifies whether to Gaussian Process interpolate training light curves
         :param z_lim: float, upper redshift limit for sample
-        :param batch_norm: Boolean, specifies whether to apply batch normalisation to critic
-        :param mode: string, must be one of 'template' or 'observed'
         :param g_dropout: float, dropout fraction to use in generator model
         :param c_dropout: float, dropout fraction to use in critic model
         :param gen_units: int, number of GRU units in each layer of generator model
         :param crit_units: int, number of GRU units in each layer of generator model
         :param sn_type: string, SN class to look at
-        :param ds: int, data structure for training. 1 for [band_time, band_mag, band_mag_err, etc.],
-                2 for [band_time, band_time, ..., band_mag, band_mag, ..., band_mag_err, band_mag_err, ...]
-        :param inc_colour: Boolean, whether to include colours in training process
         """
         self.experiment = experiment
         self.latent_dims = latent_dims
         self.clr = clr
         self.glr = glr
-        self.device = device
         self.GP = GP
         self.cosmo = FlatLambdaCDM(H0=70, Om0=0.3, Tcmb0=2.725)
         self.z_lim = z_lim
-        self.batch_norm = batch_norm
-        self.mode = mode
-        self.ds = ds
-        self.inc_colour = inc_colour
-        if self.mode.lower() not in ['template', 'observed']:
-            raise ValueError('mode must be one of template and observed')
         self.g_dropout = g_dropout
         self.c_dropout = c_dropout
         self.gen_units = gen_units
         self.crit_units = crit_units
         self.sn_type = sn_type
+        self.redshift = redshift
         # WGAN Paper guidance-----------------------------
         self.n_critic = n_critic
         self.c_optimizer = opt.Adam(lr=self.clr, beta_1=0.5, beta_2=0.9)
@@ -233,53 +221,31 @@ class WGAN:
         self.class_label_decoder = {0.0: 'II', 1.0: 'IIn', 2.0: 'IIb', 3.0: 'Ib', 4.0: 'Ic', 5.0: 'Ic-BL'}
         self.class_label_encoder = {val: key for key, val in self.class_label_decoder.items()}
         # --
-        if self.mode == 'observed':
-            self.n_output = 12
-        else:
-            self.n_output = 5
-        if self.gp_weight > 1:
-            self.name = f'WGAN_DES_sim_{self.sn_type}_CCSNe_{self.mode}_clr{self.clr}_glr{self.glr}_ld{self.latent_dims}' \
-                        f'_GP{self.GP}_zlim{self.z_lim}_bn{self.batch_norm}_gN{self.gen_units}_cN{self.crit_units}' \
-                        f'_gd{self.g_dropout}_cd{self.c_dropout}_ds{self.ds}_colour{self.inc_colour}' \
-                        f'_ncrit{self.n_critic}_gpw{self.gp_weight}'
-        else:
-            self.name = f'WGAN_DES_sim_{sn_type}_CCSNe_{self.mode}_clr{self.clr}_glr{self.glr}_ld{self.latent_dims}' \
-                        f'_GP{self.GP}_zlim{self.z_lim}_bn{self.batch_norm}_gN{self.gen_units}_cN{self.crit_units}' \
-                        f'_gd{self.g_dropout}_cd{self.c_dropout}_ds{self.ds}_colour{self.inc_colour}' \
-                        f'_ncrit{self.n_critic}'
+        self.n_output = 12
+        if self.redshift:
+            self.n_output += 1
+        self.name = f'WGAN_DES_sim_{self.sn_type}_CCSNe_clr{self.clr}_glr{self.glr}_ld{self.latent_dims}' \
+                    f'_GP{self.GP}_zlim{self.z_lim}_gN{self.gen_units}_cN{self.crit_units}' \
+                    f'_gd{self.g_dropout}_cd{self.c_dropout}' \
+                    f'_ncrit{self.n_critic}_gpw{self.gp_weight}_redshift{self.redshift}'
+
         if not os.path.exists(os.path.join('Data', 'Models', 'Weights', self.experiment)):
             os.mkdir(os.path.join('Data', 'Models', 'Weights', self.experiment))
         if not os.path.exists(os.path.join('Data', 'Models', 'Plots', self.experiment)):
             os.mkdir(os.path.join('Data', 'Models', 'Plots', self.experiment))
         if not os.path.exists(os.path.join('Data', 'Models', 'LCs', self.experiment)):
             os.mkdir(os.path.join('Data', 'Models', 'LCs', self.experiment))
-        if not os.path.exists(os.path.join('Data', 'Models', 'Weights', self.experiment, 'WGAN')):
-            os.mkdir(os.path.join('Data', 'Models', 'Weights', self.experiment, 'WGAN'))
-        if not os.path.exists(os.path.join('Data', 'Models', 'Plots', self.experiment, 'WGAN')):
-            os.mkdir(os.path.join('Data', 'Models', 'Plots', self.experiment, 'WGAN'))
-        if not os.path.exists(os.path.join('Data', 'Models', 'LCs', self.experiment, 'WGAN')):
-            os.mkdir(os.path.join('Data', 'Models', 'LCs', self.experiment, 'WGAN'))
-        if not os.path.exists(os.path.join('Data', 'Models', 'Weights', self.experiment, 'WGAN', self.mode)):
-            os.mkdir(os.path.join('Data', 'Models', 'Weights', self.experiment, 'WGAN', self.mode))
-        if not os.path.exists(os.path.join('Data', 'Models', 'Plots', self.experiment, 'WGAN', self.mode)):
-            os.mkdir(os.path.join('Data', 'Models', 'Plots', self.experiment, 'WGAN', self.mode))
-        if not os.path.exists(os.path.join('Data', 'Models', 'LCs', self.experiment, 'WGAN', self.mode)):
-            os.mkdir(os.path.join('Data', 'Models', 'LCs', self.experiment, 'WGAN', self.mode))
-        self.weight_root = os.path.join('Data', 'Models', 'Weights', self.experiment, 'WGAN', self.mode, self.name)
-        self.plot_root = os.path.join('Data', 'Models', 'Plots', self.experiment, 'WGAN', self.mode, self.name)
-        self.lc_root = os.path.join('Data', 'Models', 'LCs', self.experiment, 'WGAN', self.mode, self.name)
+        self.weight_root = os.path.join('Data', 'Models', 'Weights', self.experiment, self.name)
+        self.plot_root = os.path.join('Data', 'Models', 'Plots', self.experiment, self.name)
+        self.lc_root = os.path.join('Data', 'Models', 'LCs', self.experiment, self.name)
         if not os.path.exists(self.weight_root):
             os.mkdir(self.weight_root)
         if not os.path.exists(self.plot_root):
             os.mkdir(self.plot_root)
         if not os.path.exists(self.lc_root):
             os.mkdir(self.lc_root)
-        if self.sn_type == 'Ia':
-            self.dataset_name = f'WGAN_Ia_DES_sim_{self.mode}_colour{self.inc_colour}_GP{self.GP}_zlim{self.z_lim}'
-            self.dataset_path = os.path.join('Data', 'Datasets', f'{self.dataset_name}.csv')
-        else:
-            self.dataset_name = f'WGAN_DES_sim_{self.mode}_colour{self.inc_colour}_GP{self.GP}_zlim{self.z_lim}'
-            self.dataset_path = os.path.join('Data', 'Datasets', f'{self.dataset_name}.csv')
+        self.dataset_name = f'WGAN_DES_sim_colourFalse_GP{self.GP}_zlim{self.z_lim}_redshift'
+        self.dataset_path = os.path.join('Data', 'Datasets', f'{self.dataset_name}.csv')
         if os.path.exists(self.dataset_path):
             self.train_df = pd.read_csv(self.dataset_path)
             self.scaling_factors = pickle.load(open(os.path.join('Data', 'Datasets', f'{self.dataset_name}'
@@ -287,55 +253,49 @@ class WGAN:
         else:
             print('Dataset does not already exist, creating now...')
             self.train_df, self.scaling_factors = self.__prepare_dataset__()
-        if 'scaleerr' in self.experiment:
-            min = np.min(np.r_[self.train_df.g_err, self.train_df.r_err,
-                               self.train_df.i_err, self.train_df.z_err])
-            max = np.max(np.r_[self.train_df.g_err, self.train_df.r_err,
-                               self.train_df.i_err, self.train_df.z_err])
-            self.scaling_factors.append(min)
-            self.scaling_factors.append(max)
-            self.train_df[['g_err', 'r_err', 'i_err', 'z_err']] = (self.train_df[['g_err', 'r_err', 'i_err', 'z_err']]
-                                                                   - min) / (max - min)
-        elif 'err' in self.experiment:
-            self.error_scaling = np.mean(np.r_[self.train_df.g_err, self.train_df.r_err,
-                                               self.train_df.i_err, self.train_df.z_err])
-            self.train_df[['g_err', 'r_err', 'i_err', 'z_err']] -= self.error_scaling
-            # print(self.train_df[['g_err', 'r_err', 'i_err', 'z_err']].describe())
-            # print(self.error_scaling)
-        if self.sn_type != 'Ia':
-            self.train_df = self.train_df[self.train_df.sn_type == self.class_label_encoder[sn_type]]
-        print(len(self.train_df.sn.unique()))
+        min = np.min(np.r_[self.train_df.g_err, self.train_df.r_err,
+                           self.train_df.i_err, self.train_df.z_err])
+        max = np.max(np.r_[self.train_df.g_err, self.train_df.r_err,
+                           self.train_df.i_err, self.train_df.z_err])
+        min_z, max_z = self.train_df.redshift.min(), self.train_df.redshift.max()
+        self.scaling_factors.append(min)
+        self.scaling_factors.append(max)
+        self.scaling_factors.append(min_z)
+        self.scaling_factors.append(max_z)
+        self.train_df[['g_err', 'r_err', 'i_err', 'z_err']] = (self.train_df[['g_err', 'r_err', 'i_err', 'z_err']]
+                                                               - min) / (max - min)
+        self.train_df[['redshift']] = (self.train_df[['redshift']] - min_z) / (max_z - min_z)
+        self.train_df = self.train_df[self.train_df.sn_type == self.class_label_encoder[sn_type]]
         self.wgan_dir = os.path.join(self.weight_root, 'model_weights')
 
-        with tf.device(self.device):
-            '''
-            # Optimizer
+        '''
+        # Optimizer
 
-            # Build discriminator
-            self.critic = self.build_critic()
-            self.critic.compile(loss=self.wasserstein_loss, optimizer=self.c_optimizer)
-            print(self.critic.summary())
+        # Build discriminator
+        self.critic = self.build_critic()
+        self.critic.compile(loss=self.wasserstein_loss, optimizer=self.c_optimizer)
+        print(self.critic.summary())
 
-            # Build generator
-            self.generator = self.build_generator()
-            print(self.generator.summary())
+        # Build generator
+        self.generator = self.build_generator()
+        print(self.generator.summary())
 
-            # Build combined model
+        # Build combined model
 
-            i = Input(shape=(None, self.latent_dims))
-            lcs = self.generator(i)
+        i = Input(shape=(None, self.latent_dims))
+        lcs = self.generator(i)
 
-            self.critic.trainable = False
+        self.critic.trainable = False
 
-            valid = self.critic(lcs)
+        valid = self.critic(lcs)
 
-            self.combined = Model(i, valid)
-            self.combined.compile(loss=self.wasserstein_loss, optimizer=self.g_optimizer)
-            print(self.combined.summary())'''
-            self.wgan = WGANModel(self.build_critic(), self.build_generator(), self.latent_dims,
-                                  gp_weight=self.gp_weight, discriminator_extra_steps=self.n_critic)
-            self.wgan.compile(d_optimizer=self.c_optimizer, g_optimizer=self.g_optimizer,
-                              g_loss_fn=self.generator_loss, d_loss_fn=self.discriminator_loss)
+        self.combined = Model(i, valid)
+        self.combined.compile(loss=self.wasserstein_loss, optimizer=self.g_optimizer)
+        print(self.combined.summary())'''
+        self.wgan = WGANModel(self.build_critic(), self.build_generator(), self.latent_dims,
+                              gp_weight=self.gp_weight, discriminator_extra_steps=self.n_critic)
+        self.wgan.compile(d_optimizer=self.c_optimizer, g_optimizer=self.g_optimizer,
+                          g_loss_fn=self.generator_loss, d_loss_fn=self.discriminator_loss)
 
     def __prepare_dataset__(self):
         """
@@ -390,10 +350,8 @@ class WGAN:
                     sn_phot_df = sn_phot_df[sn_phot_df.MJD > 50000]
                     sn_phot_df['t'] = (sn_phot_df.MJD - row.SIM_PEAKMJD) / (1 + row.HOSTGAL_SPECZ)
                     sn_phot_df = sn_phot_df[['t', 'FLT', 'mag', 'mag_err']]
-                    if self.mode == 'template':
-                        dist_mod = 5 * np.log10(Distance(z=row.REDSHIFT_FINAL, unit=u.pc).value) - 5
-                        sn_phot_df['mag'] -= dist_mod
                     sn_phot_df['sn'] = row.SNID
+                    sn_phot_df['redshift'] = row.HOSTGAL_SPECZ
                     if row.SIM_TEMPLATE_INDEX in self.type_dict.keys():
                         sn_phot_df['sn_type'] = self.type_dict[row.SIM_TEMPLATE_INDEX]
                         types.append(self.type_dict[row.SIM_TEMPLATE_INDEX])
@@ -410,10 +368,7 @@ class WGAN:
         all_df = all_df[~(np.isnan(all_df.mag) | np.isinf(all_df.mag))]
 
         # Get bounds for light curve scaling and rescale so between 0 and 1
-        if self.mode == 'template':
-            all_df = all_df[all_df.mag < -10.733477]  # 99th percentile
-        elif self.mode == 'observed':
-            all_df = all_df[all_df.mag < 27.428694]  # 99th percentile
+        all_df = all_df[all_df.mag < 27.428694]  # 99th percentile
         min_t, max_t = all_df.t.min(), all_df.t.max()
         min_mag, max_mag = all_df.mag.max(), all_df.mag.min()
         all_df = all_df[all_df.mag_err < 1]  # Remove points with magnitude uncertainties greater than 1 mag
@@ -429,36 +384,12 @@ class WGAN:
 
         for i, sn in tqdm(enumerate(sn_list), total=len(sn_list)):
             sn_df = all_df[all_df.sn == sn]
-            if self.mode == 'template':
-                # If rnn, can have different length inputs for each SN but still need to have same number of data
-                # points in each band, this section calculates the times to use for each SN
-                min_times, max_times = [], []
-                for f in ['g', 'r', 'i', 'z']:
-                    fdf = sn_df[sn_df.FLT == f]
-                    min_times.append(fdf.t.min())
-                    max_times.append(fdf.t.max())
-                all_t = sn_df['t'].values
-
-                all_t = all_t[all_t >= np.max(min_times)]
-                all_t = all_t[all_t <= np.min(max_times)]
-                all_t = (all_t - min_t) / (max_t - min_t)
-                ind = 0
-                while True:
-                    if ind == len(all_t):
-                        break
-                    val = all_t[-(ind + 1)]
-                    if any(np.abs(all_t[all_t != val] - val) < (1.0 / (max_t - min_t))):
-                        all_t = np.delete(all_t, -(ind + 1))
-                    else:
-                        ind += 1
-                new_sn_df = pd.DataFrame(all_t, columns=['t'])
+            new_sn_df = pd.DataFrame()
+            lens = [sn_df[sn_df.FLT == f].shape[0] for f in ['g', 'r', 'i', 'z']]
+            if np.std(lens) > 0:
+                use_len = np.min(lens)
             else:
-                new_sn_df = pd.DataFrame()
-                lens = [sn_df[sn_df.FLT == f].shape[0] for f in ['g', 'r', 'i', 'z']]
-                if np.std(lens) > 0:
-                    use_len = np.min(lens)
-                else:
-                    use_len = lens[0]
+                use_len = lens[0]
 
             skip = False
             plt.close('all')
@@ -466,23 +397,13 @@ class WGAN:
             for f in ['g', 'r', 'i', 'z']:
                 fdf = sn_df[sn_df.FLT == f]  # .sort_values('t')
                 gp = george.GP(Matern32Kernel(1))
-                if self.mode == 'observed':
-                    if use_len < fdf.shape[0]:
-                        drop_count = fdf.shape[0] - use_len
-                        skip_num = int(np.floor(drop_count / 2))
-                        fdf = fdf.iloc[skip_num: skip_num + use_len, :]
-                    if self.inc_colour:
-                        min_filt = ['g', 'r', 'i', 'z'][np.argmin(lens)]
-                        t = (fdf.t - min_t) / (max_t - min_t)
-                        fit_t = (sn_df[sn_df.FLT == min_filt]['t'] - min_t) / (max_t - min_t)
-                        new_sn_df['t'] = t.values
-                    else:
-                        t = (fdf.t - min_t) / (max_t - min_t)
-                        fit_t = (fdf.t - min_t) / (max_t - min_t)
-                        new_sn_df[f'{f}_t'] = t.values
-                else:
-                    t = (fdf.t - min_t) / (max_t - min_t)
-                    fit_t = all_t
+                if use_len < fdf.shape[0]:
+                    drop_count = fdf.shape[0] - use_len
+                    skip_num = int(np.floor(drop_count / 2))
+                    fdf = fdf.iloc[skip_num: skip_num + use_len, :]
+                t = (fdf.t - min_t) / (max_t - min_t)
+                fit_t = (fdf.t - min_t) / (max_t - min_t)
+                new_sn_df[f'{f}_t'] = t.values
                 sn_t_min, sn_t_max = np.min(t), np.max(t)
                 y = fdf.mag
                 y_err = fdf.mag_err
@@ -501,20 +422,14 @@ class WGAN:
                     gp.compute(t, y_err)
                     p0 = gp.kernel.get_parameter_vector()[0]
                     results = spopt.minimize(ll, p0, jac=grad_ll)
-                    if self.mode == 'template':
-                        mu, cov = gp.predict(y, fit_t)
-                    elif self.mode == 'observed':
-                        mu, cov = gp.predict(y, t)
+                    mu, cov = gp.predict(y, t)
                     std = np.sqrt(np.diag(cov))
                 except:
                     if not skip:
                         gp_error += 1
                     skip = True
                     continue
-                if self.mode == 'observed':
-                    test_t, test_mu = t[mu > 0], mu[mu > 0]
-                else:
-                    test_t, test_mu = all_t[mu > 0], mu[mu > 0]
+                test_t, test_mu = t[mu > 0], mu[mu > 0]
                 if len(test_mu) == 0:
                     if not skip:
                         no_points += 1
@@ -540,6 +455,7 @@ class WGAN:
 
             new_sn_df['sn'] = sn
             new_sn_df['sn_type'] = sn_df.sn_type.values[0]
+            new_sn_df['redshift'] = sn_df.redshift.values[0]
             if 'g' in new_sn_df.columns and 'r' in new_sn_df.columns and 'i' in new_sn_df.columns and 'z' \
                     in new_sn_df.columns:
                 new_sn_df = new_sn_df.loc[np.min(new_sn_df[['g', 'r', 'i', 'z']].values, axis=1) >= 0, :]
@@ -555,7 +471,7 @@ class WGAN:
             else:
                 all_new_df = pd.concat([all_new_df, new_sn_df])
         print(used_count, skip_count, gp_error, less_than_zero, nans, no_peak, no_points)
-        all_new_df.to_csv(self.dataset_path)
+        all_new_df.to_csv(self.dataset_path, index=False)
         scaling_factors = [min_t, max_t, min_mag, max_mag]
         pickle.dump(scaling_factors,
                     open(os.path.join('Data', 'Datasets', f'{self.dataset_name}_scaling_factors.pkl'), 'wb'))
@@ -575,51 +491,28 @@ class WGAN:
         Builds generator model
         :return: model, keras Model object for generator
         """
-        with tf.device(self.device):
-            input = Input(shape=(None, self.latent_dims))
-            if self.inc_colour:
-                gru1 = GRU(self.gen_units, activation='relu', return_sequences=True)(input)
-                dr1 = Dropout(self.g_dropout)(gru1)
-                gru2 = GRU(int(self.gen_units / 2), activation='relu', return_sequences=True)(dr1)
-                dr2 = Dropout(self.g_dropout)(gru2)
-                gru3 = GRU(int(self.gen_units / 4), activation='relu', return_sequences=True)(dr2)
-                dr3 = Dropout(self.g_dropout)(gru3)
-                output = GRU(self.n_output, return_sequences=True, activation='tanh')(dr3)
-                model = Model(input, output)
-            else:
-                gru1 = GRU(self.gen_units, activation='tanh', return_sequences=True)(input)
-                dr1 = Dropout(self.g_dropout)(gru1)
-                gru2 = GRU(self.gen_units, activation='tanh', return_sequences=True)(dr1)
-                dr2 = Dropout(self.g_dropout)(gru2)
-                # gru3 = GRU(int(self.gen_units / 4), activation='tanh', return_sequences=True)(dr2)
-                # dr3 = Dropout(self.g_dropout)(gru3)
-                output = GRU(self.n_output, return_sequences=True, activation='tanh')(dr2)
-                model = Model(input, output)
-            return model
+        input = Input(shape=(None, self.latent_dims))
+        gru1 = GRU(self.gen_units, activation='tanh', return_sequences=True)(input)
+        dr1 = Dropout(self.g_dropout)(gru1)
+        gru2 = GRU(self.gen_units, activation='tanh', return_sequences=True)(dr1)
+        dr2 = Dropout(self.g_dropout)(gru2)
+        output = GRU(self.n_output, return_sequences=True, activation='tanh')(dr2)
+        model = Model(input, output)
+        return model
 
     def build_critic(self):
         """
         Builds critic model
         :return: model, keras Model object for critic
         """
-        with tf.device(self.device):
-            input = Input(shape=(None, self.n_output))
-            gru1 = GRU(self.crit_units, return_sequences=True)(input)
-            dr1 = Dropout(self.c_dropout)(gru1)
-            if self.batch_norm:
-                bn1 = BatchNormalization()(gru1)
-                gru2 = GRU(self.crit_units, return_sequences=True)(bn1)
-                bn2 = BatchNormalization()(gru2)
-                output = GRU(1, activation=None)(bn2)
-            else:
-                # gru2 = GRU(self.crit_units, return_sequences=True)(dr1)
-                # dr2 = Dropout(self.c_dropout)(gru2)
-                # output = GRU(1, activation=None)(dr2)
-                gru2 = GRU(self.crit_units)(dr1)
-                dr2 = Dropout(self.c_dropout)(gru2)
-                output = Dense(1, activation=None)(dr2)
-            model = Model(input, output)
-            return model
+        input = Input(shape=(None, self.n_output))
+        gru1 = GRU(self.crit_units, return_sequences=True)(input)
+        dr1 = Dropout(self.c_dropout)(gru1)
+        gru2 = GRU(self.crit_units)(dr1)
+        dr2 = Dropout(self.c_dropout)(gru2)
+        output = Dense(1, activation=None)(dr2)
+        model = Model(input, output)
+        return model
 
     def plot_train_sample(self):
         """
@@ -633,12 +526,9 @@ class WGAN:
             plt.figure(figsize=(12, 8))
             for b_ind, band in enumerate(['g', 'r', 'i', 'z']):
                 ax = plt.subplot(2, 2, b_ind + 1)
-                if self.mode == 'template':
-                    ax.scatter(sndf['t'], sndf[band], label=band)
-                elif self.mode == 'observed':
-                    ax.errorbar(sndf[f'{band}_t'], sndf[band], yerr=sndf[f'{band}_err'], fmt='x', label=band)
+                ax.errorbar(sndf[f'{band}_t'], sndf[band], yerr=sndf[f'{band}_err'], fmt='x', label=band)
                 ax.legend()
-            plt.savefig(os.path.join(self.root, 'Training_sample', f'{sn}.jpg'))
+            plt.savefig(os.path.join(self.plot_root, 'Training_sample', f'{sn}.jpg'))
             plt.close('all')
 
     @staticmethod
@@ -661,389 +551,94 @@ class WGAN:
         print('Starting training...')
         if not os.path.exists(os.path.join(self.plot_root, 'Train_plots')):
             os.mkdir(os.path.join(self.plot_root, 'Train_plots'))
-        with tf.device(self.device):
-            rng = np.random.default_rng(123)
+        rng = np.random.default_rng(123)
 
-            sne = self.train_df.sn.unique()
-            n_batches = int(len(sne) / batch_size)
+        sne = self.train_df.sn.unique()
+        n_batches = int(len(sne) / batch_size)
 
-            if os.path.exists(self.wgan_dir):
-                # current_epoch = np.max([int(val.split('.')[0]) for val in os.listdir(self.wgan_dir)])
-                # print(f'Model already exists, resuming training from epoch {current_epoch}...')
-                # self.wgan = keras.models.load_model(os.path.join(self.wgan_dir, f'{current_epoch}.tf'))
-                raise ValueError('A weights path already exists for this model, please delete '
-                                 'or rename it')
-            else:
-                current_epoch = 0
-                os.mkdir(self.wgan_dir)
+        if os.path.exists(self.wgan_dir):
+            # current_epoch = np.max([int(val.split('.')[0]) for val in os.listdir(self.wgan_dir)])
+            # print(f'Model already exists, resuming training from epoch {current_epoch}...')
+            # self.wgan = keras.models.load_model(os.path.join(self.wgan_dir, f'{current_epoch}.tf'))
+            raise ValueError('A weights path already exists for this model, please delete '
+                             'or rename it')
+        else:
+            current_epoch = 0
+            os.mkdir(self.wgan_dir)
 
-            real = -np.ones((batch_size, 1))
-            fake = np.ones((batch_size, 1))
-            self.train_df.to_csv('input_data.csv')
+        real = -np.ones((batch_size, 1))
+        fake = np.ones((batch_size, 1))
+        self.train_df.to_csv('input_data.csv')
 
-            epoch_g_losses, epoch_d_losses = [], []
+        epoch_g_losses, epoch_d_losses = [], []
 
-            for epoch in range(current_epoch, epochs):
-                rng.shuffle(sne)
-                g_losses, d_losses, real_predictions, fake_predictions = [], [], [], []
-                t = trange(n_batches)
-                for batch in t:
-                    # Select real data
-                    sn = sne[batch]
-                    sndf = self.train_df[self.train_df.sn == sn]
-                    if 'scaleerr' in self.experiment:
-                        sndf[['g_t', 'r_t', 'i_t', 'z_t']] = 2 * (sndf[['g_t', 'r_t', 'i_t', 'z_t']] - 0.5)
-                        sndf[['g', 'r', 'i', 'z']] = 2 * (sndf[['g', 'r', 'i', 'z']] - 0.5)
-                        sndf[['g_err', 'r_err', 'i_err', 'z_err']] = 2 * (sndf[['g_err', 'r_err', 'i_err', 'z_err']]
-                                                                          - 0.5)
-                    else:
-                        sndf[['g_t', 'r_t', 'i_t', 'z_t']] = 2 * (sndf[['g_t', 'r_t', 'i_t', 'z_t']] - 0.5)
-                        sndf[['g', 'r', 'i', 'z']] = 2 * (sndf[['g', 'r', 'i', 'z']] - 0.5)
-                        sndf[['g_err', 'r_err', 'i_err', 'z_err']] = 2 * sndf[['g_err', 'r_err', 'i_err', 'z_err']]
-                    if self.mode == 'observed' and not self.inc_colour:
-                        if self.ds == 1:
-                            X = sndf[['g_t', 'r_t', 'i_t', 'z_t', 'g', 'r', 'i', 'z', 'g_err',
-                                      'r_err', 'i_err', 'z_err']].values
-                        elif self.ds == 2:
-                            X = sndf[['g_t', 'g', 'g_err', 'r_t', 'r', 'r_err', 'i_t', 'i', 'i_err',
-                                      'z_t', 'z', 'z_err']].values
-                        else:
-                            raise ValueError('Invalid option for data structure')
-                    elif self.mode == 'observed' and self.inc_colour:
-                        sndf[['g', 'r', 'i', 'z']] = 2 * (sndf[['g', 'r', 'i', 'z']] - 0.5)
-                        sndf[['g_err', 'r_err', 'i_err', 'z_err']] = 2 * sndf[['g_err', 'r_err', 'i_err', 'z_err']]
-                        sndf['g-r'] = sndf.g.values - sndf.r.values
-                        sndf['r-i'] = sndf.r.values - sndf.i.values
-                        sndf['i-z'] = sndf.i.values - sndf.z.values
-                        X = sndf[['t', 'g', 'g-r', 'r', 'r-i', 'i', 'i-z', 'z', 'g_err',
-                                  'r_err', 'i_err', 'z_err']].values
-                    elif self.mode == 'template':
-                        X = sndf[['t', 'g', 'r', 'i', 'z']].values
-
-                    sn_type = X[0, -1]
-                    X = X.reshape((1, *X.shape))
-                    d_loss, g_loss = self.wgan.train_on_batch(X)
-
-                    if np.count_nonzero(np.isnan(X)) > 0:
-                        continue
-
-                    noise = rand.uniform(-1, 1, size=(batch_size, self.latent_dims))
-                    # noise = rand.normal(size=(batch_size, self.latent_dims))
-                    noise = np.reshape(noise, (batch_size, 1, self.latent_dims))
-                    noise = np.repeat(noise, X.shape[1], 1)
-
-                    test_gen_lcs = self.wgan.generator.predict(noise)
-                    if np.count_nonzero(np.isnan(test_gen_lcs)) > 0:
-                        raise ValueError('NaN generated, check how this happened')
-
-                    d_losses.append(d_loss)
-                    g_losses.append(g_loss)
-                    t.set_description(f'g_loss={np.around(np.mean(g_losses), 5)},'
-                                      f' d_loss={np.around(np.mean(d_losses), 5)}')
-                    t.refresh()
-                self.wgan.save(os.path.join(self.wgan_dir, f'{epoch + 1}.tf'))
-                full_g_loss = np.mean(g_losses)
-                full_d_loss = np.mean(d_losses)
-                print(f'{epoch + 1}/{epochs} g_loss={full_g_loss}, d_loss={full_d_loss}')  # , '
-                # f'Real prediction: {np.mean(real_predictions)} +- {np.std(real_predictions)}, '
-                # f'Fake prediction: {np.mean(fake_predictions)} +- {np.std(fake_predictions)}')
-                # f' Ranges: x [{np.min(gen_lcs[:, :, 0])}, {np.max(gen_lcs[:, :, 0])}], '
-                # f'y [{np.min(gen_lcs[:, :, 1])}, {np.max(gen_lcs[:, :, 1])}]')
-
-                plot_test = test_gen_lcs[0, :, :]
-                fig = plt.figure(figsize=(12, 8))
-                x = plot_test[:, 0]
-                X = X.reshape((*X.shape[1:],))
-                for f_ind, f in enumerate(['g', 'r', 'i', 'z']):
-                    ax = fig.add_subplot(2, 2, f_ind + 1)
-                    if self.mode == 'observed' and not self.inc_colour:
-                        if self.ds == 1:
-                            x, y, y_err = plot_test[:, f_ind], plot_test[:, f_ind + 4], plot_test[:, f_ind + 8]
-                            ax.errorbar(x, y, yerr=y_err, label=f, fmt='x')
-                            ax.errorbar(X[:, f_ind], X[:, f_ind + 4], yerr=X[:, f_ind + 8], fmt='x')
-                        elif self.ds == 2:
-                            x, y, y_err = plot_test[:, f_ind * 3], plot_test[:, f_ind * 3 + 1], plot_test[:,
-                                                                                                f_ind * 3 + 2]
-                            ax.errorbar(x, y, yerr=y_err, label=f, fmt='x')
-                            ax.errorbar(X[:, f_ind * 3], X[:, f_ind * 3 + 1], yerr=X[:, f_ind * 3 + 2], fmt='x')
-                        # ax.errorbar(x, y, yerr=y_err, label=f, fmt='x')
-                        # ax.errorbar(X[:, f_ind], X[:, f_ind + 4], yerr=X[:, f_ind + 8], fmt='x')
-                    elif self.mode == 'observed' and self.inc_colour:
-                        x, y, y_err = plot_test[:, 0], plot_test[:, 1 + f_ind * 2], plot_test[:, f_ind + 8]
-                        ax.errorbar(x, y, yerr=y_err, label=f, fmt='x')
-                        ax.errorbar(X[:, 0], X[:, 1 + f_ind * 2], yerr=X[:, f_ind + 8], fmt='x')
-                    elif self.mode == 'template':
-                        y = plot_test[:, f_ind + 1]
-                        ax.scatter(x, y, label=f)
-                        ax.scatter(X[:, 0], X[:, f_ind + 1])
-                    ax.legend()
-                plt.suptitle(f'Epoch {epoch + 1}/{epochs}')  #: Type {self.class_label_dict[sn_type]}')
-                plt.savefig(os.path.join(self.plot_root, 'Train_plots', f'{epoch + 1}.png'))
-                if plot_interval is not None:
-                    if (epoch + 1) % plot_interval == 0:
-                        plt.show()
-                plt.close('all')
-
-    def colour_analysis(self, epoch=-1, n=1):
-        """
-        Compares colour distribution of training set to generated light curves
-        :param epoch: Epoch of model weights to use for light curve generation
-        :param n: Number of light curves to generate
-        """
-        if epoch == -1:
-            epoch = len(os.listdir(self.generator_dir))
-        self.generator.load_weights(os.path.join(self.generator_dir, f'{epoch}.h5'))
-        all_new_df, all_gen_df = None, None
-        for sn in self.train_df.sn.unique():
-            # Deal with real data first -----------------------------------------------------
-            sn_df = self.train_df[self.train_df.sn == sn]
-
-            gp = george.GP(Matern32Kernel(1))
-
-            t = sn_df['t']
-            fine_t = np.arange(t.min(), t.max(), 0.001)
-            y = sn_df.g
-            y_err = sn_df.g_err
-
-            # Gradient function for optimisation of kernel size------------------------------
-
-            def ll(p):
-                gp.set_parameter_vector(p)
-                return -gp.log_likelihood(y, quiet=True)
-
-            def grad_ll(p):
-                gp.set_parameter_vector(p)
-                return -gp.grad_log_likelihood(y, quiet=True)
-
-            gp.compute(t, y_err)
-            p0 = gp.kernel.get_parameter_vector()[0]
-            results = spopt.minimize(ll, p0, jac=grad_ll)
-            mu, cov = gp.predict(y, fine_t)
-            tmax = fine_t[np.argmax(mu)]
-            t -= tmax
-
-            new_df = sn_df.copy()
-            new_df['t'] = new_df['t'] * (self.scaling_factors[1] - self.scaling_factors[0]) + self.scaling_factors[0]
-            for f in ['g', 'r', 'i', 'z']:
-                new_df[f] = new_df[f] * ((self.scaling_factors[3] - self.scaling_factors[2]) / 2) + \
-                            np.mean([self.scaling_factors[3], self.scaling_factors[2]])
-            if all_new_df is None:
-                all_new_df = new_df.copy()
-            else:
-                all_new_df = pd.concat([all_new_df, new_df])
-
-            # Then deal with generated light curve--------------------------------------------
-
-            noise = rand.normal(size=(n, self.latent_dims))
-            noise = np.reshape(noise, (n, 1, self.latent_dims))
-            noise = np.repeat(noise, new_df.shape[0], 1)
-            labels = np.full((n, new_df.shape[0], 1), new_df.sn_type.values[0])
-            gen_lc = self.generator.predict([noise, labels])
-
-            gen_lc_df = None
-
-            for i in range(n):
-                single_lc_df = pd.DataFrame(gen_lc[i, :, :], columns=['t', 'g', 'r', 'i', 'z', 'sn_type'])
-                single_lc_df['sn'] = i
-                if gen_lc_df is None:
-                    gen_lc_df = single_lc_df.copy()
-                else:
-                    gen_lc_df = pd.concat([gen_lc_df, single_lc_df])
-
-            # gen_lc = pd.DataFrame(gen_lc.reshape(gen_lc.shape[1:]), columns=['t', 'g', 'r', 'i', 'z', 'sn_type'])
-
-            gp = george.GP(Matern32Kernel(1))
-
-            t = gen_lc_df['t']
-            fine_t = np.arange(t.min(), t.max(), 0.001)
-            y = gen_lc_df.g
-            y_err = 0.02
-
-            def ll(p):
-                gp.set_parameter_vector(p)
-                return -gp.log_likelihood(y, quiet=True)
-
-            def grad_ll(p):
-                gp.set_parameter_vector(p)
-                return -gp.grad_log_likelihood(y, quiet=True)
-
-            gp.compute(t, y_err)
-            p0 = gp.kernel.get_parameter_vector()[0]
-            results = spopt.minimize(ll, p0, jac=grad_ll)
-            mu, cov = gp.predict(y, fine_t)
-            tmax = fine_t[np.argmax(mu)]
-            t -= tmax
-
-            gdf = gen_lc_df.copy()
-            gdf['t'] = gdf['t'] * (self.scaling_factors[1] - self.scaling_factors[0]) + self.scaling_factors[0]
-            for f in ['g', 'r', 'i', 'z']:
-                gdf[f] = gdf[f] * ((self.scaling_factors[3] - self.scaling_factors[2]) / 2) + \
-                         np.mean([self.scaling_factors[3], self.scaling_factors[2]])
-            if all_gen_df is None:
-                all_gen_df = gdf.copy()
-            else:
-                all_gen_df = pd.concat([all_gen_df, gdf])
-
-        for f in [('g', 'r'), ('r', 'i'), ('i', 'z')]:
-            f1, f2 = f
-            all_new_df[f'{f1}-{f2}'] = all_new_df[f1] - all_new_df[f2]
-            all_gen_df[f'{f1}-{f2}'] = all_gen_df[f1] - all_gen_df[f2]
-
-        for sn_type in all_new_df.sn_type.unique():
-            for f in ['g-r', 'r-i', 'i-z']:
-                plt.figure()
-                for label, df in zip(['Real', 'Simulated'], [all_new_df, all_gen_df]):
-                    type_df = df[df.sn_type == sn_type]
-                    bins = pd.cut(type_df['t'].values, np.arange(type_df.t.min(), type_df.t.max(), 5))
-                    ts, cs, c_errs = [], [], []
-                    for i, cat in enumerate(bins.categories):
-                        tdf = type_df.iloc[np.argwhere(bins.codes == i).flatten(), :]
-                        c, c_err = tdf[f].mean(), tdf[f].std()
-                        ts.append(cat.mid)
-                        cs.append(c)
-                        c_errs.append(c_err)
-                    ts, cs, c_errs = np.array(ts), np.array(cs), np.array(c_errs)
-                    if label == 'Real':
-                        plt.plot(ts, cs, label=label)
-                        plt.fill_between(ts, cs - c_errs, cs + c_errs, alpha=0.3)
-                    else:
-                        plt.errorbar(ts, cs, yerr=c_errs, fmt='x', label=label)
-                plt.title(f'SNe {self.class_label_dict[sn_type]}')
-                plt.xlabel('Phase (days)')
-                plt.ylabel(f)
-                plt.legend()
-                if not os.path.exists(os.path.join(self.plot_root, 'colour_curves')):
-                    os.mkdir(os.path.join(self.plot_root, 'colour_curves'))
-                plt.savefig(
-                    os.path.join(self.plot_root, 'colour_curves', f'{self.class_label_dict[sn_type]}_{f}_{n}.png'))
-                plt.close('all')
-
-    def plot_lightcurves(self, n=10, length=12, model=None, epochs=np.arange(1, 201), show=False):
-        for epoch in tqdm(epochs):
-            if not os.path.exists(os.path.join(self.plot_root, 'Generated_Plots')):
-                os.mkdir(os.path.join(self.plot_root, 'Generated_Plots'))
-            noise = rand.normal(size=(n, self.latent_dims))
-            noise = np.reshape(noise, (n, 1, self.latent_dims))
-            noise = np.repeat(noise, length, 1)
-            self.wgan = keras.models.load_model(os.path.join(self.wgan_dir, f'{epoch}.tf'))
-            gen_lcs = self.wgan.generator.predict(noise)
-            if not self.inc_colour:
-                gen_lcs[:, :, 0:4] = gen_lcs[:, :, 0:4] * (self.scaling_factors[1] - self.scaling_factors[0]) + \
-                                     self.scaling_factors[0]
-                gen_lcs[:, :, 4:8] = gen_lcs[:, :, 4:8] * (
-                        (self.scaling_factors[3] - self.scaling_factors[2]) / 2) + np.mean(
-                    [self.scaling_factors[3], self.scaling_factors[2]])
-                gen_lcs[:, :, 8:] = gen_lcs[:, :, 8:] * ((self.scaling_factors[3] - self.scaling_factors[2]) / 2)
-                sn = np.random.choice(self.train_df.sn.values)
+        for epoch in range(current_epoch, epochs):
+            rng.shuffle(sne)
+            g_losses, d_losses, real_predictions, fake_predictions = [], [], [], []
+            t = trange(n_batches)
+            for batch in t:
+                # Select real data
+                sn = sne[batch]
                 sndf = self.train_df[self.train_df.sn == sn]
-                X = sndf[['g_t', 'r_t', 'i_t', 'z_t', 'g', 'r', 'i', 'z', 'g_err',
-                          'r_err', 'i_err', 'z_err']].values
-                X = X.reshape((1, *X.shape))
-                X[:, :, 0:4] = X[:, :, 0:4] * (self.scaling_factors[1] - self.scaling_factors[0]) + \
-                               self.scaling_factors[0]
-                X[:, :, 4:8] = X[:, :, 4:8] * (
-                        (self.scaling_factors[3] - self.scaling_factors[2]) / 2) + np.mean(
-                    [self.scaling_factors[3], self.scaling_factors[2]])
-                X[:, :, 8:] = X[:, :, 8:] * ((self.scaling_factors[3] - self.scaling_factors[2]) / 2)
-                for i in np.arange(n):
-                    # Plot generated data
-                    data = gen_lcs[i, :, :]
-                    g_band_max = gen_lcs[i, :, 0][np.argmin(gen_lcs[i, :, 4])]
-                    g_band_max_real = X[0, :, 0][np.argmin(X[0, :, 4])]
-                    fig = plt.figure(figsize=(12, 8))
-                    ax_list = []
-                    for f_ind, f in enumerate(['g', 'r', 'i', 'z']):
-                        ax = fig.add_subplot(2, 2, f_ind + 1)
-                        x = gen_lcs[i, :, f_ind] - g_band_max
-                        y = gen_lcs[i, :, f_ind + 4]
-                        y_err = gen_lcs[i, :, f_ind + 8]
-                        ax.errorbar(x, y, yerr=y_err, label=f'{f} (Generated)', fmt='x')
-                        x = X[0, :, f_ind] - g_band_max_real
-                        y = X[0, :, f_ind + 4]  # - 2
-                        y_err = X[0, :, f_ind + 8]
-                        ax.errorbar(x, y, yerr=y_err, label=f'{f} (Real)', fmt='x')
-                        ax.legend(fontsize=16)  # , loc='upper right')
-                        # ax.annotate(f, (0.03, 0.9), xycoords='axes fraction')
-                        ax.invert_yaxis()
-                        if f_ind in [2, 3]:
-                            ax.set_xlabel('Days since g-band maximum')
-                        if f_ind in [0, 2]:
-                            ax.set_ylabel('Apparent magnitude')
-                        ax_list.append(ax)
-                    ax_list[0].get_shared_x_axes().join(*ax_list)
-                    ax_list[0].get_shared_y_axes().join(*ax_list)
-                    ax_list[1].set_yticklabels([])
-                    ax_list[3].set_yticklabels([])
-                    plt.subplots_adjust(hspace=0, wspace=0)
-                    if show:
-                        plt.show()
-                    else:
-                        plt.savefig(os.path.join(self.plot_root, 'Generated_Plots', f'{epoch}-{i + 1}.png'))
-                        plt.close('all')
-            else:
-                gen_lcs[:, :, 0] = gen_lcs[:, :, 0] * (self.scaling_factors[1] - self.scaling_factors[0]) + \
-                                   self.scaling_factors[0]
-                gen_lcs[:, :, [1, 3, 5, 7]] = gen_lcs[:, :, [1, 3, 5, 7]] * (
-                        (self.scaling_factors[3] - self.scaling_factors[2]) / 2) + np.mean(
-                    [self.scaling_factors[3], self.scaling_factors[2]])
-                gen_lcs[:, :, [2, 4, 6]] = gen_lcs[:, :, [2, 4, 6]] * (
-                        (self.scaling_factors[3] - self.scaling_factors[2]) / 2)
-                gen_lcs[:, :, 8:] = gen_lcs[:, :, 8:] * ((self.scaling_factors[3] - self.scaling_factors[2]) / 2)
-                sn = np.random.choice(self.train_df.sn.values)
-                sndf = self.train_df[self.train_df.sn == sn]
+                sndf[['g_t', 'r_t', 'i_t', 'z_t']] = 2 * (sndf[['g_t', 'r_t', 'i_t', 'z_t']] - 0.5)
                 sndf[['g', 'r', 'i', 'z']] = 2 * (sndf[['g', 'r', 'i', 'z']] - 0.5)
-                sndf[['g_err', 'r_err', 'i_err', 'z_err']] = 2 * sndf[['g_err', 'r_err', 'i_err', 'z_err']]
-                sndf['g-r'] = sndf.g.values - sndf.r.values
-                sndf['r-i'] = sndf.r.values - sndf.i.values
-                sndf['i-z'] = sndf.i.values - sndf.z.values
-                X = sndf[['t', 'g', 'g-r', 'r', 'r-i', 'i', 'i-z', 'z', 'g_err',
-                          'r_err', 'i_err', 'z_err']].values
-                X = X.reshape((1, *X.shape))
-                X[:, :, 0] = X[:, :, 0] * (self.scaling_factors[1] - self.scaling_factors[0]) + \
-                             self.scaling_factors[0]
-                X[:, :, [1, 3, 5, 7]] = X[:, :, [1, 3, 5, 7]] * (
-                        (self.scaling_factors[3] - self.scaling_factors[2]) / 2) + np.mean(
-                    [self.scaling_factors[3], self.scaling_factors[2]])
-                X[:, :, [2, 4, 6]] = X[:, :, [2, 4, 6]] * (
-                        (self.scaling_factors[3] - self.scaling_factors[2]) / 2)
-                X[:, :, 8:] = X[:, :, 8:] * ((self.scaling_factors[3] - self.scaling_factors[2]) / 2)
-                for i in np.arange(n):
-                    # Plot generated data
-                    data = gen_lcs[i, :, :]
-                    g_band_max = gen_lcs[i, :, 0][np.argmin(gen_lcs[i, :, 4])]
-                    g_band_max_real = X[0, :, 0][np.argmin(X[0, :, 4])]
-                    fig = plt.figure(figsize=(12, 8))
-                    ax_list = []
-                    for f_ind, f in enumerate(['g', 'r', 'i', 'z']):
-                        ax = fig.add_subplot(2, 2, f_ind + 1)
-                        x = gen_lcs[i, :, 0] - g_band_max
-                        y = gen_lcs[i, :, 1 + 2 * f_ind]
-                        y_err = gen_lcs[i, :, f_ind + 8]
-                        ax.errorbar(x, y, yerr=y_err, label=f'{f} (Generated)', fmt='x')
-                        x = X[0, :, 0] - g_band_max_real
-                        y = X[0, :, 1 + 2 * f_ind]  # - 2
-                        y_err = X[0, :, f_ind + 8]
-                        ax.errorbar(x, y, yerr=y_err, label=f'{f} (Real)', fmt='x')
-                        ax.legend(fontsize=16)  # , loc='upper right')
-                        # ax.annotate(f, (0.03, 0.9), xycoords='axes fraction')
-                        ax.invert_yaxis()
-                        if f_ind in [2, 3]:
-                            ax.set_xlabel('Days since g-band maximum')
-                        if f_ind in [0, 2]:
-                            ax.set_ylabel('Apparent magnitude')
-                        ax_list.append(ax)
-                    ax_list[0].get_shared_x_axes().join(*ax_list)
-                    ax_list[0].get_shared_y_axes().join(*ax_list)
-                    ax_list[1].set_yticklabels([])
-                    ax_list[3].set_yticklabels([])
-                    plt.subplots_adjust(hspace=0, wspace=0)
-                if show:
-                    plt.show()
+                sndf[['g_err', 'r_err', 'i_err', 'z_err']] = 2 * (sndf[['g_err', 'r_err', 'i_err', 'z_err']]
+                                                                  - 0.5)
+                if self.redshift:
+                    sndf[['redshift']] = 2 * (sndf[['redshift']] - 0.5)
+                    X = sndf[['g_t', 'r_t', 'i_t', 'z_t', 'g', 'r', 'i', 'z', 'g_err',
+                              'r_err', 'i_err', 'z_err', 'redshift']].values
                 else:
-                    plt.savefig(os.path.join(self.plot_root, 'Generated_Plots', f'{epoch}-{i + 1}.png'))
-                    plt.close('all')
-                # raise ValueError('Nope')
-                # break
+                    X = sndf[['g_t', 'r_t', 'i_t', 'z_t', 'g', 'r', 'i', 'z', 'g_err',
+                                      'r_err', 'i_err', 'z_err']].values
+
+                sn_type = X[0, -1]
+                X = X.reshape((1, *X.shape))
+                d_loss, g_loss = self.wgan.train_on_batch(X)
+
+                if np.count_nonzero(np.isnan(X)) > 0:
+                    continue
+
+                # noise = rand.uniform(-1, 1, size=(batch_size, self.latent_dims))
+                noise = rand.normal(size=(batch_size, self.latent_dims))
+                noise = np.reshape(noise, (batch_size, 1, self.latent_dims))
+                noise = np.repeat(noise, X.shape[1], 1)
+
+                test_gen_lcs = self.wgan.generator.predict(noise)
+                if np.count_nonzero(np.isnan(test_gen_lcs)) > 0:
+                    raise ValueError('NaN generated, check how this happened')
+
+                d_losses.append(d_loss)
+                g_losses.append(g_loss)
+                t.set_description(f'g_loss={np.around(np.mean(g_losses), 5)},'
+                                  f' d_loss={np.around(np.mean(d_losses), 5)}')
+                t.refresh()
+            self.wgan.save(os.path.join(self.wgan_dir, f'{epoch + 1}.tf'))
+            full_g_loss = np.mean(g_losses)
+            full_d_loss = np.mean(d_losses)
+            print(f'{epoch + 1}/{epochs} g_loss={full_g_loss}, d_loss={full_d_loss}')  # , '
+            # f'Real prediction: {np.mean(real_predictions)} +- {np.std(real_predictions)}, '
+            # f'Fake prediction: {np.mean(fake_predictions)} +- {np.std(fake_predictions)}')
+            # f' Ranges: x [{np.min(gen_lcs[:, :, 0])}, {np.max(gen_lcs[:, :, 0])}], '
+            # f'y [{np.min(gen_lcs[:, :, 1])}, {np.max(gen_lcs[:, :, 1])}]')
+
+            plot_test = test_gen_lcs[0, :, :]
+            fig = plt.figure(figsize=(12, 8))
+            x = plot_test[:, 0]
+            X = X.reshape((*X.shape[1:],))
+            for f_ind, f in enumerate(['g', 'r', 'i', 'z']):
+                ax = fig.add_subplot(2, 2, f_ind + 1)
+                x, y, y_err = plot_test[:, f_ind], plot_test[:, f_ind + 4], plot_test[:, f_ind + 8]
+                ax.errorbar(x, y, yerr=y_err, label=f, fmt='x')
+                ax.errorbar(X[:, f_ind], X[:, f_ind + 4], yerr=X[:, f_ind + 8], fmt='x')
+
+                ax.legend()
+            plt.suptitle(f'Epoch {epoch + 1}/{epochs}')  #: Type {self.class_label_dict[sn_type]}')
+            plt.savefig(os.path.join(self.plot_root, 'Train_plots', f'{epoch + 1}.png'))
+            if plot_interval is not None:
+                if (epoch + 1) % plot_interval == 0:
+                    plt.show()
+            plt.close('all')
 
     def sample_analysis(self, n=1, epoch=1000, plot_lcs=False, name_suffix=None, file_format='png'):
         if name_suffix is not None:
@@ -1106,19 +701,9 @@ class WGAN:
             # if len(real_prop_dict['g15']) > 10:
             #    break
             sndf = self.train_df[self.train_df.sn == sn]
-            if not self.inc_colour:
-                # Fit for real SN first
-                sndf = sndf[['sn', 'g_t', 'r_t', 'i_t', 'z_t', 'g', 'r', 'i', 'z', 'g_err',
-                             'r_err', 'i_err', 'z_err']]
-            else:
-                sndf = sndf[['sn', 't', 'g', 'r', 'i', 'z', 'g_err',
-                             'r_err', 'i_err', 'z_err']]
-                sndf['g_t'] = sndf['t'].values
-                sndf['r_t'] = sndf['t'].values
-                sndf['i_t'] = sndf['t'].values
-                sndf['z_t'] = sndf['t'].values
-                sndf = sndf[['sn', 'g_t', 'r_t', 'i_t', 'z_t', 'g', 'r', 'i', 'z', 'g_err',
-                             'r_err', 'i_err', 'z_err']]
+            # Fit for real SN first
+            sndf = sndf[['sn', 'g_t', 'r_t', 'i_t', 'z_t', 'g', 'r', 'i', 'z', 'g_err',
+                         'r_err', 'i_err', 'z_err']]
             timesteps = sndf.shape[0]
             full_sndf = sndf.copy()
 
@@ -1139,20 +724,8 @@ class WGAN:
                     continue
                 gen_count += 1
 
-                if not self.inc_colour:
-                    gen_sndf = pd.DataFrame(X, columns=sndf.columns[1:])
-                else:
-                    gen_sndf = pd.DataFrame(X, columns=['t', 'g', 'g_r', 'r', 'r_i', 'i', 'i_z', 'z', 'g_err', 'r_err',
-                                                        'i_err', 'z_err'])
-                    gen_sndf['g_t'] = gen_sndf['t'].values
-                    gen_sndf['r_t'] = gen_sndf['t'].values
-                    gen_sndf['i_t'] = gen_sndf['t'].values
-                    gen_sndf['z_t'] = gen_sndf['t'].values
-                    gen_sndf = gen_sndf[['g_t', 'r_t', 'i_t', 'z_t', 'g', 'r', 'i', 'z', 'g_err',
-                                         'r_err', 'i_err', 'z_err']]
-                    gen_sndf[['g', 'r', 'i', 'z']] = 0.5 * gen_sndf[['g', 'r', 'i', 'z']] + 0.5
-                    gen_sndf[['g_err', 'r_err', 'i_err', 'z_err']] = 0.5 * gen_sndf[
-                        ['g_err', 'r_err', 'i_err', 'z_err']]
+                gen_sndf = pd.DataFrame(X, columns=sndf.columns[1:])
+
                 gen_sndf['sn'] = f'gen_{gen_number}'
                 gen_number += 1
                 full_sndf = pd.concat([full_sndf, gen_sndf])
@@ -1161,25 +734,14 @@ class WGAN:
                 sndf = full_sndf[full_sndf.sn == sname]
                 gen = True if 'gen' in str(sname) else False
 
-                if 'scaleerr' in self.experiment:
-                    if gen:
-                        sndf[['g_t', 'r_t', 'i_t', 'z_t']] = (sndf[['g_t', 'r_t', 'i_t', 'z_t']] + 1) / 2
-                        sndf[['g', 'r', 'i', 'z']] = (sndf[['g', 'r', 'i', 'z']] + 1) / 2
-                        sndf[['g_err', 'r_err', 'i_err', 'z_err']] = (sndf[
-                                                                          ['g_err', 'r_err', 'i_err', 'z_err']] + 1) \
-                                                                     / 2
-                    sndf[['g_err', 'r_err', 'i_err', 'z_err']] = sndf[['g_err', 'r_err', 'i_err', 'z_err']] * (
-                            self.scaling_factors[5] - self.scaling_factors[4]) + self.scaling_factors[4]
-                elif 'err' in self.experiment:
-                    if gen:
-                        sndf[['g_t', 'r_t', 'i_t', 'z_t']] = (sndf[['g_t', 'r_t', 'i_t', 'z_t']] + 1) / 2
-                        sndf[['g', 'r', 'i', 'z']] = (sndf[['g', 'r', 'i', 'z']] + 1) / 2
-                        sndf[['g_err', 'r_err', 'i_err', 'z_err']] = sndf[['g_err', 'r_err', 'i_err', 'z_err']] / 2
-                    sndf[['g_err', 'r_err', 'i_err', 'z_err']] += self.error_scaling
-                elif gen and 'sig' not in self.experiment:
+                if gen:
                     sndf[['g_t', 'r_t', 'i_t', 'z_t']] = (sndf[['g_t', 'r_t', 'i_t', 'z_t']] + 1) / 2
                     sndf[['g', 'r', 'i', 'z']] = (sndf[['g', 'r', 'i', 'z']] + 1) / 2
-                    sndf[['g_err', 'r_err', 'i_err', 'z_err']] = sndf[['g_err', 'r_err', 'i_err', 'z_err']] / 2
+                    sndf[['g_err', 'r_err', 'i_err', 'z_err']] = (sndf[
+                                                                      ['g_err', 'r_err', 'i_err', 'z_err']] + 1) \
+                                                                 / 2
+                sndf[['g_err', 'r_err', 'i_err', 'z_err']] = sndf[['g_err', 'r_err', 'i_err', 'z_err']] * (
+                        self.scaling_factors[5] - self.scaling_factors[4]) + self.scaling_factors[4]
                 all_t = np.r_[sndf.g_t.values, sndf.r_t.values, sndf.i_t.values, sndf.z_t.values]
                 day_step = 0.1
                 t_step = day_step / (self.scaling_factors[1] - self.scaling_factors[0])
@@ -1350,11 +912,6 @@ class WGAN:
                     else:
                         plt.savefig(os.path.join(self.plot_root, 'Real_Plots', f'{sname}.png'), bbox_inches='tight')
                     plt.close('all')
-        '''
-        plt.scatter(real_prop_dict['g_rise'], real_prop_dict['g15'], c='r', label='Real')
-        plt.scatter(gen_prop_dict['g_rise'], gen_prop_dict['g15'], c='b', label='Generated')
-        plt.legend()
-        plt.show()
 
         param_list = []
         for param in ['_max', '15', '_rise', 'colour']:
@@ -1402,17 +959,15 @@ class WGAN:
         plt.savefig(os.path.join(self.plot_root, 'Summary_Plots', str(epoch), f'UMAP.{file_format}'),
                     bbox_inches='tight')
         plt.show()
-        '''
-        '''
-        figure = corner.corner(final_real_corner_data, color='r', labels=[label_dict[key] for key in param_list],
-                               quantiles=(0.16, 0.84), levels=(1 - np.exp(-2),), labelpad=0.1, plot_contours=True)
-        corner.corner(final_gen_corner_data, fig=figure, color='b',
-                      quantiles=(0.16, 0.84), levels=((1 - np.exp(-2),),), plot_contours=True)
-        plt.savefig(os.path.join(self.plot_root, 'Summary_Plots', str(epoch), f'corner.{file_format}'),
-                    bbox_inches='tight')
-        plt.show()
-        '''
-        '''
+
+        # figure = corner.corner(final_real_corner_data, color='r', labels=[label_dict[key] for key in param_list],
+        #                       quantiles=(0.16, 0.84), levels=(1 - np.exp(-2),), labelpad=0.1, plot_contours=True)
+        # corner.corner(final_gen_corner_data, fig=figure, color='b',
+        #              quantiles=(0.16, 0.84), levels=((1 - np.exp(-2),),), plot_contours=True)
+        # plt.savefig(os.path.join(self.plot_root, 'Summary_Plots', str(epoch), f'corner.{file_format}'),
+        #           bbox_inches='tight')
+        # plt.show()
+
         for param in ['_max', '15', '_rise', 'colour']:
             if param == 'colour':
                 iter_list = ['g-r', 'r-i', 'i-z']
@@ -1598,7 +1153,7 @@ class WGAN:
         plt.subplots_adjust(hspace=0, wspace=0)
         plt.savefig(os.path.join(self.plot_root, 'Summary_Plots', str(epoch), f'mean_lcs_shift.{file_format}'),
                     bbox_inches='tight')
-        '''
+
         fig, axs = plt.subplots(2, 2, figsize=(12, 8), sharex=True, sharey=True)
         for f_ind, f in enumerate(['g', 'r', 'i', 'z']):
             ax = axs.flatten()[f_ind]
@@ -1648,7 +1203,6 @@ class WGAN:
         plt.savefig(os.path.join(self.plot_root, 'Summary_Plots', str(epoch), f'mag_vs_error.{file_format}'),
                     bbox_inches='tight')
         plt.show()
-        raise ValueError('Nope')
 
         fig, axs = plt.subplots(2, 2, figsize=(12, 8), sharex=True, sharey=True)
         for f_ind, f in enumerate(['g', 'r', 'i', 'z']):
@@ -1721,7 +1275,6 @@ class WGAN:
         plt.subplots_adjust(hspace=0, wspace=0)
         plt.savefig(os.path.join(self.plot_root, 'Summary_Plots', str(epoch), f'candence_vs_N.{file_format}'),
                     bbox_inches='tight')
-
         plt.show()
 
     def lc_plot(self, col, row, scale=4, epoch=1000, timesteps=12, file_format='png'):
@@ -1753,22 +1306,12 @@ class WGAN:
             X = gen_lcs[0, :, :]
             gen_sndf = pd.DataFrame(X, columns=sndf.columns[1:])
             # gen_sndf = sndf.copy()
-            if 'scaleerr' in self.experiment:
-                gen_sndf[['g_t', 'r_t', 'i_t', 'z_t']] = (gen_sndf[['g_t', 'r_t', 'i_t', 'z_t']] + 1) / 2
-                gen_sndf[['g', 'r', 'i', 'z']] = (gen_sndf[['g', 'r', 'i', 'z']] + 1) / 2
-                gen_sndf[['g_err', 'r_err', 'i_err', 'z_err']] = (gen_sndf[['g_err', 'r_err', 'i_err', 'z_err']] + 1) \
-                                                                 / 2
-                gen_sndf[['g_err', 'r_err', 'i_err', 'z_err']] = gen_sndf[['g_err', 'r_err', 'i_err', 'z_err']] * (
-                        self.scaling_factors[5] - self.scaling_factors[4]) + self.scaling_factors[4]
-            elif 'err' in self.experiment:
-                gen_sndf[['g_t', 'r_t', 'i_t', 'z_t']] = (gen_sndf[['g_t', 'r_t', 'i_t', 'z_t']] + 1) / 2
-                gen_sndf[['g', 'r', 'i', 'z']] = (gen_sndf[['g', 'r', 'i', 'z']] + 1) / 2
-                gen_sndf[['g_err', 'r_err', 'i_err', 'z_err']] = gen_sndf[['g_err', 'r_err', 'i_err', 'z_err']] / 2
-                gen_sndf[['g_err', 'r_err', 'i_err', 'z_err']] += self.error_scaling
-            elif 'sig' not in self.experiment:
-                gen_sndf[['g_t', 'r_t', 'i_t', 'z_t']] = (gen_sndf[['g_t', 'r_t', 'i_t', 'z_t']] + 1) / 2
-                gen_sndf[['g', 'r', 'i', 'z']] = (gen_sndf[['g', 'r', 'i', 'z']] + 1) / 2
-                gen_sndf[['g_err', 'r_err', 'i_err', 'z_err']] = gen_sndf[['g_err', 'r_err', 'i_err', 'z_err']] / 2
+            gen_sndf[['g_t', 'r_t', 'i_t', 'z_t']] = (gen_sndf[['g_t', 'r_t', 'i_t', 'z_t']] + 1) / 2
+            gen_sndf[['g', 'r', 'i', 'z']] = (gen_sndf[['g', 'r', 'i', 'z']] + 1) / 2
+            gen_sndf[['g_err', 'r_err', 'i_err', 'z_err']] = (gen_sndf[['g_err', 'r_err', 'i_err', 'z_err']] + 1) \
+                                                             / 2
+            gen_sndf[['g_err', 'r_err', 'i_err', 'z_err']] = gen_sndf[['g_err', 'r_err', 'i_err', 'z_err']] * (
+                    self.scaling_factors[5] - self.scaling_factors[4]) + self.scaling_factors[4]
             gen_sndf[['g_t', 'r_t', 'i_t', 'z_t']] = gen_sndf[['g_t', 'r_t', 'i_t', 'z_t']] * \
                                                      (self.scaling_factors[1] - self.scaling_factors[0]) + \
                                                      self.scaling_factors[0]
@@ -1812,19 +1355,9 @@ class WGAN:
                 # if len(real_prop_dict['g15']) > 40:
                 #    break
                 sndf = self.train_df[self.train_df.sn == sn]
-                if not self.inc_colour:
-                    # Fit for real SN first
-                    sndf = sndf[['sn', 'g_t', 'r_t', 'i_t', 'z_t', 'g', 'r', 'i', 'z', 'g_err',
-                                 'r_err', 'i_err', 'z_err']]
-                else:
-                    sndf = sndf[['sn', 't', 'g', 'r', 'i', 'z', 'g_err',
-                                 'r_err', 'i_err', 'z_err']]
-                    sndf['g_t'] = sndf['t'].values
-                    sndf['r_t'] = sndf['t'].values
-                    sndf['i_t'] = sndf['t'].values
-                    sndf['z_t'] = sndf['t'].values
-                    sndf = sndf[['sn', 'g_t', 'r_t', 'i_t', 'z_t', 'g', 'r', 'i', 'z', 'g_err',
-                                 'r_err', 'i_err', 'z_err']]
+                # Fit for real SN first
+                sndf = sndf[['sn', 'g_t', 'r_t', 'i_t', 'z_t', 'g', 'r', 'i', 'z', 'g_err',
+                             'r_err', 'i_err', 'z_err']]
                 timesteps = sndf.shape[0]
                 full_sndf = sndf.copy()
 
@@ -1845,20 +1378,7 @@ class WGAN:
                         continue
                     gen_count += 1
 
-                    if not self.inc_colour:
-                        gen_sndf = pd.DataFrame(X, columns=sndf.columns[1:])
-                    else:
-                        gen_sndf = pd.DataFrame(X, columns=['t', 'g', 'g_r', 'r', 'r_i', 'i', 'i_z', 'z', 'g_err', 'r_err',
-                                                            'i_err', 'z_err'])
-                        gen_sndf['g_t'] = gen_sndf['t'].values
-                        gen_sndf['r_t'] = gen_sndf['t'].values
-                        gen_sndf['i_t'] = gen_sndf['t'].values
-                        gen_sndf['z_t'] = gen_sndf['t'].values
-                        gen_sndf = gen_sndf[['g_t', 'r_t', 'i_t', 'z_t', 'g', 'r', 'i', 'z', 'g_err',
-                                             'r_err', 'i_err', 'z_err']]
-                        gen_sndf[['g', 'r', 'i', 'z']] = 0.5 * gen_sndf[['g', 'r', 'i', 'z']] + 0.5
-                        gen_sndf[['g_err', 'r_err', 'i_err', 'z_err']] = 0.5 * gen_sndf[
-                            ['g_err', 'r_err', 'i_err', 'z_err']]
+                    gen_sndf = pd.DataFrame(X, columns=sndf.columns[1:])
                     gen_sndf['sn'] = f'gen_{gen_number}'
                     gen_number += 1
                     full_sndf = pd.concat([full_sndf, gen_sndf])
@@ -1867,25 +1387,15 @@ class WGAN:
                     sndf = full_sndf[full_sndf.sn == sname]
                     gen = True if 'gen' in str(sname) else False
 
-                    if 'scaleerr' in self.experiment:
-                        if gen:
-                            sndf[['g_t', 'r_t', 'i_t', 'z_t']] = (sndf[['g_t', 'r_t', 'i_t', 'z_t']] + 1) / 2
-                            sndf[['g', 'r', 'i', 'z']] = (sndf[['g', 'r', 'i', 'z']] + 1) / 2
-                            sndf[['g_err', 'r_err', 'i_err', 'z_err']] = (sndf[
-                                                                              ['g_err', 'r_err', 'i_err', 'z_err']] + 1) \
-                                                                         / 2
-                        sndf[['g_err', 'r_err', 'i_err', 'z_err']] = sndf[['g_err', 'r_err', 'i_err', 'z_err']] * (
-                                self.scaling_factors[5] - self.scaling_factors[4]) + self.scaling_factors[4]
-                    elif 'err' in self.experiment:
-                        if gen:
-                            sndf[['g_t', 'r_t', 'i_t', 'z_t']] = (sndf[['g_t', 'r_t', 'i_t', 'z_t']] + 1) / 2
-                            sndf[['g', 'r', 'i', 'z']] = (sndf[['g', 'r', 'i', 'z']] + 1) / 2
-                            sndf[['g_err', 'r_err', 'i_err', 'z_err']] = sndf[['g_err', 'r_err', 'i_err', 'z_err']] / 2
-                        sndf[['g_err', 'r_err', 'i_err', 'z_err']] += self.error_scaling
-                    elif gen and 'sig' not in self.experiment:
+                    if gen:
                         sndf[['g_t', 'r_t', 'i_t', 'z_t']] = (sndf[['g_t', 'r_t', 'i_t', 'z_t']] + 1) / 2
                         sndf[['g', 'r', 'i', 'z']] = (sndf[['g', 'r', 'i', 'z']] + 1) / 2
-                        sndf[['g_err', 'r_err', 'i_err', 'z_err']] = sndf[['g_err', 'r_err', 'i_err', 'z_err']] / 2
+                        sndf[['g_err', 'r_err', 'i_err', 'z_err']] = (sndf[
+                                                                          ['g_err', 'r_err', 'i_err', 'z_err']] + 1) \
+                                                                     / 2
+                    sndf[['g_err', 'r_err', 'i_err', 'z_err']] = sndf[['g_err', 'r_err', 'i_err', 'z_err']] * (
+                            self.scaling_factors[5] - self.scaling_factors[4]) + self.scaling_factors[4]
+
                     all_t = np.r_[sndf.g_t.values, sndf.r_t.values, sndf.i_t.values, sndf.z_t.values]
                     day_step = 0.1
                     t_step = day_step / (self.scaling_factors[1] - self.scaling_factors[0])
@@ -2086,19 +1596,10 @@ class WGAN:
                 # if len(real_prop_dict['g15']) > 20:
                 #    break
                 sndf = self.train_df[self.train_df.sn == sn]
-                if not self.inc_colour:
-                    # Fit for real SN first
-                    sndf = sndf[['sn', 'g_t', 'r_t', 'i_t', 'z_t', 'g', 'r', 'i', 'z', 'g_err',
-                                 'r_err', 'i_err', 'z_err']]
-                else:
-                    sndf = sndf[['sn', 't', 'g', 'r', 'i', 'z', 'g_err',
-                                 'r_err', 'i_err', 'z_err']]
-                    sndf['g_t'] = sndf['t'].values
-                    sndf['r_t'] = sndf['t'].values
-                    sndf['i_t'] = sndf['t'].values
-                    sndf['z_t'] = sndf['t'].values
-                    sndf = sndf[['sn', 'g_t', 'r_t', 'i_t', 'z_t', 'g', 'r', 'i', 'z', 'g_err',
-                                 'r_err', 'i_err', 'z_err']]
+                # Fit for real SN first
+                sndf = sndf[['sn', 'g_t', 'r_t', 'i_t', 'z_t', 'g', 'r', 'i', 'z', 'g_err',
+                             'r_err', 'i_err', 'z_err']]
+
                 timesteps = sndf.shape[0]
                 full_sndf = sndf.copy()
 
@@ -2119,20 +1620,7 @@ class WGAN:
                         continue
                     gen_count += 1
 
-                    if not self.inc_colour:
-                        gen_sndf = pd.DataFrame(X, columns=sndf.columns[1:])
-                    else:
-                        gen_sndf = pd.DataFrame(X, columns=['t', 'g', 'g_r', 'r', 'r_i', 'i', 'i_z', 'z', 'g_err', 'r_err',
-                                                            'i_err', 'z_err'])
-                        gen_sndf['g_t'] = gen_sndf['t'].values
-                        gen_sndf['r_t'] = gen_sndf['t'].values
-                        gen_sndf['i_t'] = gen_sndf['t'].values
-                        gen_sndf['z_t'] = gen_sndf['t'].values
-                        gen_sndf = gen_sndf[['g_t', 'r_t', 'i_t', 'z_t', 'g', 'r', 'i', 'z', 'g_err',
-                                             'r_err', 'i_err', 'z_err']]
-                        gen_sndf[['g', 'r', 'i', 'z']] = 0.5 * gen_sndf[['g', 'r', 'i', 'z']] + 0.5
-                        gen_sndf[['g_err', 'r_err', 'i_err', 'z_err']] = 0.5 * gen_sndf[
-                            ['g_err', 'r_err', 'i_err', 'z_err']]
+                    gen_sndf = pd.DataFrame(X, columns=sndf.columns[1:])
                     gen_sndf['sn'] = f'gen_{gen_number}'
                     gen_number += 1
                     full_sndf = pd.concat([full_sndf, gen_sndf])
@@ -2141,25 +1629,14 @@ class WGAN:
                     sndf = full_sndf[full_sndf.sn == sname]
                     gen = True if 'gen' in str(sname) else False
 
-                    if 'scaleerr' in self.experiment:
-                        if gen:
-                            sndf[['g_t', 'r_t', 'i_t', 'z_t']] = (sndf[['g_t', 'r_t', 'i_t', 'z_t']] + 1) / 2
-                            sndf[['g', 'r', 'i', 'z']] = (sndf[['g', 'r', 'i', 'z']] + 1) / 2
-                            sndf[['g_err', 'r_err', 'i_err', 'z_err']] = (sndf[
-                                                                              ['g_err', 'r_err', 'i_err', 'z_err']] + 1) \
-                                                                         / 2
-                        sndf[['g_err', 'r_err', 'i_err', 'z_err']] = sndf[['g_err', 'r_err', 'i_err', 'z_err']] * (
-                                self.scaling_factors[5] - self.scaling_factors[4]) + self.scaling_factors[4]
-                    elif 'err' in self.experiment:
-                        if gen:
-                            sndf[['g_t', 'r_t', 'i_t', 'z_t']] = (sndf[['g_t', 'r_t', 'i_t', 'z_t']] + 1) / 2
-                            sndf[['g', 'r', 'i', 'z']] = (sndf[['g', 'r', 'i', 'z']] + 1) / 2
-                            sndf[['g_err', 'r_err', 'i_err', 'z_err']] = sndf[['g_err', 'r_err', 'i_err', 'z_err']] / 2
-                        sndf[['g_err', 'r_err', 'i_err', 'z_err']] += self.error_scaling
-                    elif gen and 'sig' not in self.experiment:
+                    if gen:
                         sndf[['g_t', 'r_t', 'i_t', 'z_t']] = (sndf[['g_t', 'r_t', 'i_t', 'z_t']] + 1) / 2
                         sndf[['g', 'r', 'i', 'z']] = (sndf[['g', 'r', 'i', 'z']] + 1) / 2
-                        sndf[['g_err', 'r_err', 'i_err', 'z_err']] = sndf[['g_err', 'r_err', 'i_err', 'z_err']] / 2
+                        sndf[['g_err', 'r_err', 'i_err', 'z_err']] = (sndf[
+                                                                          ['g_err', 'r_err', 'i_err', 'z_err']] + 1) \
+                                                                     / 2
+                    sndf[['g_err', 'r_err', 'i_err', 'z_err']] = sndf[['g_err', 'r_err', 'i_err', 'z_err']] * (
+                            self.scaling_factors[5] - self.scaling_factors[4]) + self.scaling_factors[4]
                     all_t = np.r_[sndf.g_t.values, sndf.r_t.values, sndf.i_t.values, sndf.z_t.values]
                     day_step = 0.1
                     t_step = day_step / (self.scaling_factors[1] - self.scaling_factors[0])
