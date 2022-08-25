@@ -39,7 +39,7 @@ from prdc import compute_prdc
 plt.rcParams.update({'font.size': 26})
 pd.options.mode.chained_assignment = None
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "3"
+os.environ["CUDA_VISIBLE_DEVICES"] = "1"
 
 
 class WGANModel(keras.Model):
@@ -1350,7 +1350,7 @@ class WGAN:
                     else:
                         plt.savefig(os.path.join(self.plot_root, 'Real_Plots', f'{sname}.png'), bbox_inches='tight')
                     plt.close('all')
-        '''
+
         plt.scatter(real_prop_dict['g_rise'], real_prop_dict['g15'], c='r', label='Real')
         plt.scatter(gen_prop_dict['g_rise'], gen_prop_dict['g15'], c='b', label='Generated')
         plt.legend()
@@ -1403,7 +1403,6 @@ class WGAN:
                     bbox_inches='tight')
         plt.show()
         '''
-        '''
         figure = corner.corner(final_real_corner_data, color='r', labels=[label_dict[key] for key in param_list],
                                quantiles=(0.16, 0.84), levels=(1 - np.exp(-2),), labelpad=0.1, plot_contours=True)
         corner.corner(final_gen_corner_data, fig=figure, color='b',
@@ -1412,7 +1411,7 @@ class WGAN:
                     bbox_inches='tight')
         plt.show()
         '''
-        '''
+
         for param in ['_max', '15', '_rise', 'colour']:
             if param == 'colour':
                 iter_list = ['g-r', 'r-i', 'i-z']
@@ -1598,7 +1597,8 @@ class WGAN:
         plt.subplots_adjust(hspace=0, wspace=0)
         plt.savefig(os.path.join(self.plot_root, 'Summary_Plots', str(epoch), f'mean_lcs_shift.{file_format}'),
                     bbox_inches='tight')
-        '''
+        plt.show()
+
         fig, axs = plt.subplots(2, 2, figsize=(12, 8), sharex=True, sharey=True)
         for f_ind, f in enumerate(['g', 'r', 'i', 'z']):
             ax = axs.flatten()[f_ind]
@@ -1648,7 +1648,6 @@ class WGAN:
         plt.savefig(os.path.join(self.plot_root, 'Summary_Plots', str(epoch), f'mag_vs_error.{file_format}'),
                     bbox_inches='tight')
         plt.show()
-        raise ValueError('Nope')
 
         fig, axs = plt.subplots(2, 2, figsize=(12, 8), sharex=True, sharey=True)
         for f_ind, f in enumerate(['g', 'r', 'i', 'z']):
