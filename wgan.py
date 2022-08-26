@@ -39,7 +39,7 @@ from prdc import compute_prdc
 plt.rcParams.update({'font.size': 26})
 pd.options.mode.chained_assignment = None
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+os.environ["CUDA_VISIBLE_DEVICES"] = "1"
 
 
 class WGANModel(keras.Model):
@@ -585,7 +585,7 @@ class WGAN:
                 sndf[['g_err', 'r_err', 'i_err', 'z_err']] = 2 * (sndf[['g_err', 'r_err', 'i_err', 'z_err']]
                                                                   - 0.5)
                 if self.redshift:
-                    sndf[['redshift']] = 2 * (sndf[['redshift']] - 0.5)
+                    # sndf[['redshift']] = 2 * (sndf[['redshift']] - 0.5)
                     X = sndf[['g_t', 'r_t', 'i_t', 'z_t', 'g', 'r', 'i', 'z', 'g_err',
                               'r_err', 'i_err', 'z_err', 'redshift']].values
                 else:
@@ -659,8 +659,8 @@ class WGAN:
         real_gp_df, gen_gp_df = None, None
         real_scaled_df, gen_scaled_df = None, None
         self.wgan = keras.models.load_model(os.path.join(self.wgan_dir, f'{epoch}.tf'))
-        sn_props = ['g_max', 'r_max', 'i_max', 'z_max', 'g15', 'r15', 'i15', 'z15',
-                    'g_rise', 'r_rise', 'i_rise', 'z_rise', 'g-r', 'r-i', 'i-z']
+        sn_props = ['g_max', 'r_max', 'i_max', 'z_max', 'g_Mmax', 'r_Mmax', 'i_Mmax', 'z_Mmax',
+                    'g15', 'r15', 'i15', 'z15', 'g_rise', 'r_rise', 'i_rise', 'z_rise', 'g-r', 'r-i', 'i-z', 'redshift']
         real_prop_dict = {key: [] for key in sn_props}
         gen_prop_dict = {key: [] for key in sn_props}
         colour_dict = {'g': 'g', 'r': 'r', 'i': 'b', 'z': 'k'}
@@ -668,6 +668,10 @@ class WGAN:
                       'r_max': r'Peak $m_r$',
                       'i_max': r'Peak $m_i$',
                       'z_max': r'Peak $m_z$',
+                      'g_Mmax': r'Peak $M_g$',
+                      'r_Mmax': r'Peak $M_r$',
+                      'i_Mmax': r'Peak $M_i$',
+                      'z_Mmax': r'Peak $M_z$',
                       'g15': r'$\Delta m_{g,15}$',
                       'r15': r'$\Delta m_{r,15}$',
                       'i15': r'$\Delta m_{i,15}$',
@@ -678,12 +682,17 @@ class WGAN:
                       'z_rise': r'$z$-band rise time',
                       'g-r': r'$g-r$',
                       'r-i': r'$r-i$',
-                      'i-z': r'$i-z$'
+                      'i-z': r'$i-z$',
+                      'redshift': 'Redshift'
                       }
         bin_step_dict = {'g_max': 0.25,
                          'r_max': 0.25,
                          'i_max': 0.25,
                          'z_max': 0.25,
+                         'g_Mmax': 0.25,
+                         'r_Mmax': 0.25,
+                         'i_Mmax': 0.25,
+                         'z_Mmax': 0.25,
                          'g15': 0.1,
                          'r15': 0.1,
                          'i15': 0.1,
@@ -694,16 +703,21 @@ class WGAN:
                          'z_rise': 4,
                          'g-r': 0.25,
                          'r-i': 0.25,
-                         'i-z': 0.25
+                         'i-z': 0.25,
+                         'redshift': 0.02
                          }
         gen_number = 1
         for sn in tqdm(self.train_df.sn.unique(), total=len(self.train_df.sn.unique())):
-            # if len(real_prop_dict['g15']) > 10:
-            #    break
+            # if len(real_prop_dict['g15']) > 40:
+            #     break
             sndf = self.train_df[self.train_df.sn == sn]
             # Fit for real SN first
-            sndf = sndf[['sn', 'g_t', 'r_t', 'i_t', 'z_t', 'g', 'r', 'i', 'z', 'g_err',
-                         'r_err', 'i_err', 'z_err']]
+            if self.redshift:
+                sndf = sndf[['sn', 'g_t', 'r_t', 'i_t', 'z_t', 'g', 'r', 'i', 'z', 'g_err',
+                             'r_err', 'i_err', 'z_err', 'redshift']]
+            else:
+                sndf = sndf[['sn', 'g_t', 'r_t', 'i_t', 'z_t', 'g', 'r', 'i', 'z', 'g_err',
+                             'r_err', 'i_err', 'z_err']]
             timesteps = sndf.shape[0]
             full_sndf = sndf.copy()
 
@@ -737,9 +751,8 @@ class WGAN:
                 if gen:
                     sndf[['g_t', 'r_t', 'i_t', 'z_t']] = (sndf[['g_t', 'r_t', 'i_t', 'z_t']] + 1) / 2
                     sndf[['g', 'r', 'i', 'z']] = (sndf[['g', 'r', 'i', 'z']] + 1) / 2
-                    sndf[['g_err', 'r_err', 'i_err', 'z_err']] = (sndf[
-                                                                      ['g_err', 'r_err', 'i_err', 'z_err']] + 1) \
-                                                                 / 2
+                    sndf[['g_err', 'r_err', 'i_err', 'z_err']] = (sndf[['g_err', 'r_err', 'i_err', 'z_err']] + 1) / 2
+                    sndf[['redshift']] = (sndf[['redshift']] + 1) / 2
                 sndf[['g_err', 'r_err', 'i_err', 'z_err']] = sndf[['g_err', 'r_err', 'i_err', 'z_err']] * (
                         self.scaling_factors[5] - self.scaling_factors[4]) + self.scaling_factors[4]
                 all_t = np.r_[sndf.g_t.values, sndf.r_t.values, sndf.i_t.values, sndf.z_t.values]
@@ -781,6 +794,11 @@ class WGAN:
                         self.scaling_factors[3] - self.scaling_factors[2]) + self.scaling_factors[2]
                 snfitdf[['g_err', 'r_err', 'i_err', 'z_err']] = snfitdf[['g_err', 'r_err', 'i_err', 'z_err']] * (
                         self.scaling_factors[3] - self.scaling_factors[2]) * -1
+                if self.redshift:
+                    sndf[['redshift']] = sndf[['redshift']] * (
+                            self.scaling_factors[7] - self.scaling_factors[6]) + self.scaling_factors[6]
+                    redshift = sndf.redshift.mean()
+                    dist_mod = 5 * np.log10(Distance(z=redshift, cosmology=self.cosmo, unit=u.Mpc).value * 1e5)
 
                 maxes = [snfitdf[snfitdf[f] == snfitdf[f].min()]['t'].values[0] for f in ['g', 'r', 'i', 'z']]
                 tmax = np.min(maxes)
@@ -798,6 +816,15 @@ class WGAN:
                 snfitdf['first_r'] = sndf[['r_t']].min().values[0]
                 snfitdf['first_i'] = sndf[['i_t']].min().values[0]
                 snfitdf['first_z'] = sndf[['z_t']].min().values[0]
+                if self.redshift:
+                    sndf[['g_tz', 'r_tz', 'i_tz', 'z_tz']] = sndf[['g_t', 'r_t', 'i_t', 'z_t']] / (1 + redshift)
+                    sndf[['g_abs', 'r_abs', 'i_abs', 'z_abs']] = sndf[['g', 'r', 'i', 'z']] - dist_mod
+                    snfitdf[['tz']] = snfitdf[['t']] / (1 + redshift)
+                    snfitdf[['g_abs', 'r_abs', 'i_abs', 'z_abs']] = sndf[['g', 'r', 'i', 'z']] - dist_mod
+                    snfitdf['first_gz'] = sndf[['g_tz']].min().values[0]
+                    snfitdf['first_rz'] = sndf[['r_tz']].min().values[0]
+                    snfitdf['first_iz'] = sndf[['i_tz']].min().values[0]
+                    snfitdf['first_zz'] = sndf[['z_tz']].min().values[0]
                 if -snfitdf['t'].min() > 3 * snfitdf['t'].max():  # Remove objects which don't peak
                     continue
                 if gen:
@@ -825,7 +852,9 @@ class WGAN:
                 scaled_sndf = sndf.copy()
                 for f_ind, f in enumerate(['g', 'r', 'i', 'z']):
                     fmax = scaled_sndf[f].min()
+                    fabsmax = scaled_sndf[f'{f}_abs'].min()
                     scaled_sndf[f] -= fmax
+                    scaled_sndf[f'{f}_abs'] -= fabsmax
                 if gen:
                     if gen_scaled_df is None:
                         gen_scaled_df = scaled_sndf.copy()
@@ -847,6 +876,7 @@ class WGAN:
                     if max_df.shape[0] > 1:
                         max_df = max_df.iloc[[0], :]
                     max_mag = snfitdf[f].min()
+                    max_absmag = max_mag - dist_mod
                     m15 = snfitdf[np.around(snfitdf['t'], 1) == np.around(max_df['t'].values[0] + 15, 1)][f] \
                           - max_mag
                     rise = max_df['t'].values[0] - t0
@@ -864,7 +894,8 @@ class WGAN:
                             ax.scatter(max_df['t'].values[0] + 15, max_mag + m15, color=colour_dict[f])
                         ax.legend()
                     if gen:
-                        gen_prop_dict[f'{f}_max'].append(snfitdf[f].min())
+                        gen_prop_dict[f'{f}_max'].append(max_mag)
+                        gen_prop_dict[f'{f}_Mmax'].append(max_absmag)
                         gen_prop_dict[f'{f}_rise'].append(rise)
                         if not m15.empty:
                             gen_prop_dict[f'{f}15'].append(m15.values[0])
@@ -880,8 +911,11 @@ class WGAN:
                         elif f == 'i':
                             max_colour = max_df.i - max_df.z
                             gen_prop_dict['i-z'].append(max_colour.values[0])
+                        elif f == 'z':
+                            gen_prop_dict['redshift'].append(redshift)
                     else:
-                        real_prop_dict[f'{f}_max'].append(snfitdf[f].min())
+                        real_prop_dict[f'{f}_max'].append(max_mag)
+                        real_prop_dict[f'{f}_Mmax'].append(max_absmag)
                         real_prop_dict[f'{f}_rise'].append(rise)
                         if not m15.empty:
                             real_prop_dict[f'{f}15'].append(m15.values[0])
@@ -897,6 +931,8 @@ class WGAN:
                         elif f == 'i':
                             max_colour = max_df.i - max_df.z
                             real_prop_dict['i-z'].append(max_colour.values[0])
+                        elif f == 'z':
+                            real_prop_dict['redshift'].append(redshift)
                 if plot_lcs:
                     ax.invert_yaxis()
                     axs[1, 0].set_xlabel('Phase')
@@ -919,6 +955,8 @@ class WGAN:
                 param_list = param_list + ['g-r', 'r-i', 'i-z']
             else:
                 param_list = param_list + [f'{f}{param}' for f in ['g', 'r', 'i', 'z']]
+        if self.redshift:
+            param_list.append('redshift')
         real_corner_data, gen_corner_data = [], []
         for ind, key in enumerate(param_list):
             real_corner_data.append(real_prop_dict[key])
@@ -968,12 +1006,15 @@ class WGAN:
         #           bbox_inches='tight')
         # plt.show()
 
-        for param in ['_max', '15', '_rise', 'colour']:
+        for param in ['_max', '_Mmax', '15', '_rise', 'colour', 'redshift']:
             if param == 'colour':
                 iter_list = ['g-r', 'r-i', 'i-z']
+            elif param == 'redshift':
+                iter_list = ['redshift']
             else:
                 iter_list = [f'{f}{param}' for f in ['g', 'r', 'i', 'z']]
-            fig, ax = plt.subplots(2, len(iter_list), figsize=(18, 12), sharex='col', sharey='row')
+            fig_width = 10 if len(iter_list) == 1 else 18
+            fig, ax = plt.subplots(2, len(iter_list), figsize=(fig_width, 12), sharex='col', sharey='row')
             for ind, key in enumerate(iter_list):
                 bin_step = bin_step_dict[key]
                 all_vals = np.array(real_prop_dict[key] + gen_prop_dict[key])
@@ -981,9 +1022,13 @@ class WGAN:
                 up = np.ceil(np.nanmax(all_vals) * (1 / bin_step)) / (1 / bin_step)
                 bins = np.arange(low, up + bin_step, bin_step)
                 # Plot histograms
-                ax[0, ind].hist(real_prop_dict[key], bins=bins, density=True, histtype='step', color='r', ls='-',
+                if len(iter_list) > 1:
+                    ax1, ax2 = ax[0, ind], ax[1, ind]
+                else:
+                    ax1, ax2 = ax[0], ax[1]
+                ax1.hist(real_prop_dict[key], bins=bins, density=True, histtype='step', color='r', ls='-',
                                 label='Real')
-                ax[0, ind].hist(gen_prop_dict[key], bins=bins, density=True, histtype='step', color='b', ls='--',
+                ax1.hist(gen_prop_dict[key], bins=bins, density=True, histtype='step', color='b', ls='--',
                                 label='Generated')
                 # Plot CDFs
                 real_data = np.array(real_prop_dict[key])
@@ -993,13 +1038,14 @@ class WGAN:
                 gen_data = gen_data[~np.isnan(gen_data)]
                 gen_data = np.sort(gen_data)
                 ks = stats.ks_2samp(real_data, gen_data)
-                ax[1, ind].plot(real_data, np.arange(1, real_data.shape[0] + 1) / real_data.shape[0], c='r', ls='-')
-                ax[1, ind].plot(gen_data, np.arange(1, gen_data.shape[0] + 1) / gen_data.shape[0], c='b', ls='--')
-                ax[1, ind].set_xlabel(label_dict[key])
-                ax[1, ind].set_ylim([0, 1.19])
-            ax[0, 0].legend()
-            ax[0, 0].set_ylabel('Frequency Density')
-            ax[1, 0].set_ylabel('Cumulative Frequency Density')
+                ax2.plot(real_data, np.arange(1, real_data.shape[0] + 1) / real_data.shape[0], c='r', ls='-')
+                ax2.plot(gen_data, np.arange(1, gen_data.shape[0] + 1) / gen_data.shape[0], c='b', ls='--')
+                ax2.set_xlabel(label_dict[key])
+                ax2.set_ylim([0, 1.19])
+                if ind == 0:
+                    ax1.legend()
+                    ax1.set_ylabel('Frequency Density')
+                    ax2.set_ylabel('Cumulative Frequency Density')
             plt.subplots_adjust(hspace=0, wspace=0)
             fig.align_ylabels()
             plt.savefig(os.path.join(self.plot_root, 'Summary_Plots', str(epoch), f'all{param}.{file_format}'),
@@ -1091,8 +1137,11 @@ class WGAN:
         t_step = 5
         fig, axs = plt.subplots(2, 2, figsize=(12, 8), sharex=True, sharey=True)
         fig2, axs2 = plt.subplots(2, 2, figsize=(12, 8), sharex=True, sharey=True)
+        fig3, axs3 = plt.subplots(2, 2, figsize=(12, 8), sharex=True, sharey=True)
+        fig4, axs4 = plt.subplots(2, 2, figsize=(12, 8), sharex=True, sharey=True)
         for f_ind, f in enumerate(['g', 'r', 'i', 'z']):
-            ax, ax2 = axs.flatten()[f_ind], axs2.flatten()[f_ind]
+            ax, ax2, ax3, ax4 = axs.flatten()[f_ind], axs2.flatten()[f_ind], axs3.flatten()[f_ind], \
+                                axs4.flatten()[f_ind]
             ts, mags, mag_errs, scale_mags, scale_mag_errs = [], [], [], [], []
             for t_low in np.arange(real_scaled_df[f'{f}_t'].min(), real_scaled_df[f'{f}_t'].max(), t_step):
                 t_up = t_low + t_step
@@ -1109,8 +1158,25 @@ class WGAN:
             ax.fill_between(ts, mags - mag_errs, mags + mag_errs, color='r', alpha=0.3)
             ax2.plot(ts, scale_mags, c='r', ls='-', label='Real')
             ax2.fill_between(ts, scale_mags - scale_mag_errs, scale_mags + scale_mag_errs, color='r', alpha=0.3)
-            # hatch='/', facecolor='none', edgecolor='r')
-            ax, ax2 = axs.flatten()[f_ind], axs2.flatten()[f_ind]
+            if self.redshift:
+                ts, mags, mag_errs, scale_mags, scale_mag_errs = [], [], [], [], []
+                for t_low in np.arange(real_scaled_df[f'{f}_tz'].min(), real_scaled_df[f'{f}_tz'].max(), t_step):
+                    t_up = t_low + t_step
+                    tdf = real_df[(real_df[f'{f}_tz'] > t_low) & (real_df[f'{f}_tz'] < t_up)]
+                    scale_tdf = real_scaled_df[(real_scaled_df[f'{f}_tz'] > t_low) & (real_scaled_df[f'{f}_tz'] < t_up)]
+                    ts.append(tdf[f'{f}_tz'].mean())
+                    mags.append(tdf[f'{f}_abs'].mean())
+                    mag_errs.append(tdf[f'{f}_abs'].std())
+                    scale_mags.append(scale_tdf[f'{f}_abs'].mean())
+                    scale_mag_errs.append(scale_tdf[f'{f}_abs'].std())
+                ts, mags, mag_errs, scale_mags, scale_mag_errs = np.array(ts), np.array(mags), np.array(mag_errs), \
+                                                                 np.array(scale_mags), np.array(scale_mag_errs)
+                ax3.plot(ts, mags, c='r', ls='-', label='Real')
+                ax3.fill_between(ts, mags - mag_errs, mags + mag_errs, color='r', alpha=0.3)
+                ax4.plot(ts, scale_mags, c='r', ls='-', label='Real')
+                ax4.fill_between(ts, scale_mags - scale_mag_errs, scale_mags + scale_mag_errs, color='r', alpha=0.3)
+                # hatch='/', facecolor='none', edgecolor='r')
+                # ax, ax2 = axs.flatten()[f_ind], axs2.flatten()[f_ind]
             ts, mags, mag_errs, scale_mags, scale_mag_errs = [], [], [], [], []
             for t_low in np.arange(gen_scaled_df[f'{f}_t'].min(), gen_scaled_df[f'{f}_t'].max(), t_step):
                 t_up = t_low + t_step
@@ -1128,7 +1194,29 @@ class WGAN:
             ax2.plot(ts, scale_mags, c='b', ls='--', label='Generated')
             ax2.fill_between(ts, scale_mags - scale_mag_errs, scale_mags + scale_mag_errs, color='b', alpha=0.3)
             # hatch='x', facecolor="none", edgecolor='b')
+            if self.redshift:
+                ts, mags, mag_errs, scale_mags, scale_mag_errs = [], [], [], [], []
+                for t_low in np.arange(gen_scaled_df[f'{f}_tz'].min(), gen_scaled_df[f'{f}_tz'].max(), t_step):
+                    t_up = t_low + t_step
+                    tdf = gen_df[(gen_df[f'{f}_tz'] > t_low) & (gen_df[f'{f}_tz'] < t_up)]
+                    scale_tdf = gen_scaled_df[(gen_scaled_df[f'{f}_tz'] > t_low) & (gen_scaled_df[f'{f}_tz'] < t_up)]
+                    ts.append(tdf[f'{f}_tz'].mean())
+                    mags.append(tdf[f'{f}_abs'].mean())
+                    mag_errs.append(tdf[f'{f}_abs'].std())
+                    scale_mags.append(scale_tdf[f'{f}_abs'].mean())
+                    scale_mag_errs.append(scale_tdf[f'{f}_abs'].std())
+                ts, mags, mag_errs, scale_mags, scale_mag_errs = np.array(ts), np.array(mags), np.array(mag_errs), \
+                                                                 np.array(scale_mags), np.array(scale_mag_errs)
+                ax3.plot(ts, mags, c='b', ls='--', label='Generated')
+                ax3.fill_between(ts, mags - mag_errs, mags + mag_errs, color='b', alpha=0.3)
+                ax4.plot(ts, scale_mags, c='b', ls='--', label='Generated')
+                ax4.fill_between(ts, scale_mags - scale_mag_errs, scale_mags + scale_mag_errs, color='b', alpha=0.3)
+                # hatch='x', facecolor="none", edgecolor='b')
             ax.annotate(f, (0.03, 0.9), xycoords='axes fraction')
+            ax2.annotate(f, (0.03, 0.9), xycoords='axes fraction')
+            if self.redshift:
+                ax3.annotate(f, (0.03, 0.9), xycoords='axes fraction')
+                ax4.annotate(f, (0.03, 0.9), xycoords='axes fraction')
         ax.invert_yaxis()
         ax2.invert_yaxis()
         axs[1, 0].legend(loc='lower right')
@@ -1139,12 +1227,29 @@ class WGAN:
                         labelbottom=False, labelleft=False, labeltop=False)
         ax0.set_ylabel('Apparent magnitude', labelpad=40)
         axs2[1, 0].legend(loc='lower right')
-        axs2[1, 0].set_xlabel('Phase')
+        axs2[1, 0].set_xlabel('Observer-frame phase')
         axs2[1, 1].set_xlabel('Phase')
         ax0 = fig2.add_subplot(111, frameon=False)
         ax0.tick_params(axis='both', which='both', left=False, right=False, bottom=False, top=False,
                         labelbottom=False, labelleft=False, labeltop=False)
         ax0.set_ylabel('Magnitude shift', labelpad=40)
+        if self.redshift:
+            ax3.invert_yaxis()
+            ax4.invert_yaxis()
+            axs3[1, 0].legend(loc='lower right')
+            axs3[1, 0].set_xlabel('Rest-frame phase')
+            axs3[1, 1].set_xlabel('Phase')
+            ax0 = fig3.add_subplot(111, frameon=False)
+            ax0.tick_params(axis='both', which='both', left=False, right=False, bottom=False, top=False,
+                            labelbottom=False, labelleft=False, labeltop=False)
+            ax0.set_ylabel('Absolute magnitude', labelpad=40)
+            axs4[1, 0].legend(loc='lower right')
+            axs4[1, 0].set_xlabel('Rest-frame phase')
+            axs4[1, 1].set_xlabel('Rest-frame phase')
+            ax0 = fig4.add_subplot(111, frameon=False)
+            ax0.tick_params(axis='both', which='both', left=False, right=False, bottom=False, top=False,
+                            labelbottom=False, labelleft=False, labeltop=False)
+            ax0.set_ylabel('Magnitude shift', labelpad=40)
         plt.figure(1)
         plt.subplots_adjust(hspace=0, wspace=0)
         plt.savefig(os.path.join(self.plot_root, 'Summary_Plots', str(epoch), f'mean_lcs.{file_format}'),
@@ -1153,6 +1258,17 @@ class WGAN:
         plt.subplots_adjust(hspace=0, wspace=0)
         plt.savefig(os.path.join(self.plot_root, 'Summary_Plots', str(epoch), f'mean_lcs_shift.{file_format}'),
                     bbox_inches='tight')
+        if self.redshift:
+            plt.figure(3)
+            plt.subplots_adjust(hspace=0, wspace=0)
+            plt.savefig(os.path.join(self.plot_root, 'Summary_Plots', str(epoch), f'mean_lcs_abs.{file_format}'),
+                        bbox_inches='tight')
+            plt.figure(4)
+            plt.subplots_adjust(hspace=0, wspace=0)
+            plt.savefig(os.path.join(self.plot_root, 'Summary_Plots', str(epoch), f'mean_lcs_abs_shift.{file_format}'),
+                        bbox_inches='tight')
+        plt.show()
+        plt.close('all')
 
         fig, axs = plt.subplots(2, 2, figsize=(12, 8), sharex=True, sharey=True)
         for f_ind, f in enumerate(['g', 'r', 'i', 'z']):
