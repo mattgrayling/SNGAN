@@ -167,7 +167,7 @@ class WGAN:
     Wasserstein GAN implementation for supernova light curve generation
     """
 
-    def __init__(self, experiment='general', latent_dims=100, clr=0.0005, glr=0.0005, GP=True,
+    def __init__(self, experiment='general', latent_dims=100, clr=0.0005, glr=0.0005, GP=True, dataset_path=None,
                  z_lim=None, g_dropout=0.5, c_dropout=0.5, redshift=False,
                  gen_units=100, crit_units=100, sn_type='II', n_critic=1,
                  gp_weight=10):
@@ -244,28 +244,43 @@ class WGAN:
             os.mkdir(self.plot_root)
         if not os.path.exists(self.lc_root):
             os.mkdir(self.lc_root)
-        self.dataset_name = f'WGAN_DES_sim_colourFalse_GP{self.GP}_zlim{self.z_lim}_redshift'
-        self.dataset_path = os.path.join('Data', 'Datasets', f'{self.dataset_name}.csv')
-        if os.path.exists(self.dataset_path):
-            self.train_df = pd.read_csv(self.dataset_path)
-            self.scaling_factors = pickle.load(open(os.path.join('Data', 'Datasets', f'{self.dataset_name}'
-                                                                                     f'_scaling_factors.pkl'), 'rb'))
+        if dataset_path is not None:
+            data = pd.read_csv(os.path.join('Data', 'Datasets', dataset_path))
+            print(data.head())
+            min_t, max_t = data[['g_t', 'r_t', 'i_t', 'z_t']].values.min(), data[['g_t', 'r_t', 'i_t', 'z_t']].values.max()
+            min_mag, max_mag = data[['g', 'r', 'i', 'z']].values.min(), data[['g', 'r', 'i', 'z']].values.max()
+            min_err, max_err = data[['g_err', 'r_err', 'i_err', 'z_err']].values.min(), \
+                               data[['g_err', 'r_err', 'i_err', 'z_err']].values.max()
+            min_z, max_z = np.min(data[['redshift']].values), np.max(data[['redshift']].values)
+            data[['g_t', 'r_t', 'i_t', 'z_t']] = 2 * ((data[['g_t', 'r_t', 'i_t', 'z_t']].values - min_t) / (max_t - min_t) - 0.5)
+            data[['g', 'r', 'i', 'z']] = 2 * ((data[['g', 'r', 'i', 'z']].values - min_mag) / (max_mag - min_mag) - 0.5)
+            data[['g_err', 'r_err', 'i_err', 'z_err']] = 2 * ((data[['g_err', 'r_err', 'i_err', 'z_err']].values - min_err) / (max_err - min_err) - 0.5)
+            data['redshift'] = 2 * ((data['redshift'].values - min_z) / (max_z - min_z) - 0.5)
+            self.train_df = data
+            self.scaling_factors = (min_t, max_t, min_mag, max_mag, min_err, max_err, min_z, max_z)
         else:
-            print('Dataset does not already exist, creating now...')
-            self.train_df, self.scaling_factors = self.__prepare_dataset__()
-        min = np.min(np.r_[self.train_df.g_err, self.train_df.r_err,
-                           self.train_df.i_err, self.train_df.z_err])
-        max = np.max(np.r_[self.train_df.g_err, self.train_df.r_err,
-                           self.train_df.i_err, self.train_df.z_err])
-        min_z, max_z = self.train_df.redshift.min(), self.train_df.redshift.max()
-        self.scaling_factors.append(min)
-        self.scaling_factors.append(max)
-        self.scaling_factors.append(min_z)
-        self.scaling_factors.append(max_z)
-        self.train_df[['g_err', 'r_err', 'i_err', 'z_err']] = (self.train_df[['g_err', 'r_err', 'i_err', 'z_err']]
-                                                               - min) / (max - min)
-        self.train_df[['redshift']] = (self.train_df[['redshift']] - min_z) / (max_z - min_z)
-        self.train_df = self.train_df[self.train_df.sn_type == self.class_label_encoder[sn_type]]
+            self.dataset_name = f'WGAN_DES_sim_colourFalse_GP{self.GP}_zlim{self.z_lim}_redshift'
+            self.dataset_path = os.path.join('Data', 'Datasets', f'{self.dataset_name}.csv')
+            if os.path.exists(self.dataset_path):
+                self.train_df = pd.read_csv(self.dataset_path)
+                self.scaling_factors = pickle.load(open(os.path.join('Data', 'Datasets', f'{self.dataset_name}'
+                                                                                         f'_scaling_factors.pkl'), 'rb'))
+            else:
+                print('Dataset does not already exist, creating now...')
+                self.train_df, self.scaling_factors = self.__prepare_dataset__()
+            min = np.min(np.r_[self.train_df.g_err, self.train_df.r_err,
+                               self.train_df.i_err, self.train_df.z_err])
+            max = np.max(np.r_[self.train_df.g_err, self.train_df.r_err,
+                               self.train_df.i_err, self.train_df.z_err])
+            min_z, max_z = self.train_df.redshift.min(), self.train_df.redshift.max()
+            self.scaling_factors.append(min)
+            self.scaling_factors.append(max)
+            self.scaling_factors.append(min_z)
+            self.scaling_factors.append(max_z)
+            self.train_df[['g_err', 'r_err', 'i_err', 'z_err']] = (self.train_df[['g_err', 'r_err', 'i_err', 'z_err']]
+                                                                   - min) / (max - min)
+            self.train_df[['redshift']] = (self.train_df[['redshift']] - min_z) / (max_z - min_z)
+            self.train_df = self.train_df[self.train_df.sn_type == self.class_label_encoder[sn_type]]
         self.wgan_dir = os.path.join(self.weight_root, 'model_weights')
 
         '''
